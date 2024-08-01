@@ -12,12 +12,15 @@ source("./helpers/find_invalid_case_data.R")
 source("./helpers/readSummaries.R")
 source("./helpers/merge_and_format_data.R")
 source("./helpers/convert2markdown_list.R")
+source("./helpers/merge_into_single_markdown.R")
 
 # Create directories if they don't exist
 dir.create("data/processed", showWarnings = FALSE)
 dir.create("data/processed/raw", showWarnings = FALSE)
 dir.create("data/processed/markdown", showWarnings = FALSE)
+dir.create("data/processed/merged", showWarnings = FALSE)
 
+# Get raw data tibble
 data2save <- getFileTibble() |>
   select(path, specialty, case_id, type, language) |>
   pivot_wider(names_from = type, values_from = path) |>
@@ -34,12 +37,13 @@ data2save <- getFileTibble() |>
       structure(specialty = x$specialty, case_id = x$case_id, language = x$language)
   })
 
+# Check for errors in the data
 errors <- lapply(data2save, find_invalid_case_data) |> unlist()
 if (length(errors) > 0) {
   cat("Errors found:\n", errors |> paste(collapse = "\n"))
 }
 
-# Save to both JSON raw and JSON with markdown
+# Save multiple versions of the data
 walk(data2save,
      function(x) {
        # Save to JSON for web interface
@@ -52,6 +56,11 @@ walk(data2save,
          jsonlite::toJSON(auto_unbox = TRUE) |>
          write_file(file = with(attributes(x),
                                 glue("data/processed/markdown/markdown_{specialty}_{case_id}_{language}.json")))
+
+       # Save to single markdown file
+       merge_into_single_markdown(x) |>
+         write_file(file = with(attributes(x), 
+                                glue("data/processed/merged/merged_{specialty}_{case_id}_{language}.md")))       
      })
 
 data2save |> map_chr(\(x) attr(x, "language")) |> unique()
