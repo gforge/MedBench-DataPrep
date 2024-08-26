@@ -31,13 +31,26 @@ readSummaries <- function(summaries) {
       str_remove("^Summary_4_")
 
     # Split core_name into its components
-    components <- str_split(core_name, "_")[[1]]
-
-    # Extract components
-    specialty <- components[1]
-    case_id <- components[which(components == "Case") + 1]
-    language <- components[which(components == "Case") + 2]
-    generator <- ifelse(length(components) > (which(components == "Case") + 2), components[length(components)], "Human")
+    if (str_detect(core_name, "@original@")) {
+      # E.g. original name: Summary_4_Orthopaedics_Case 1@original@gpt-4_turbo-2024-04-09@temp=0.0@basic.txt",
+      regex <- "(.*)_Case (\\d+)@([^@]+)@(.*@temp=\\d\\.\\d@.*)$"
+      if (!str_detect(core_name, regex)) {
+        stop("Invalid file name format: ", core_name)
+      }
+      
+      specialty <- str_match(core_name, regex)[, 2]
+      case_id <- str_match(core_name, regex)[, 3]
+      language <- str_match(core_name, regex)[, 4]
+      generator <- str_match(core_name, regex)[, 5]
+    } else {
+      components <- str_split(core_name, "_")[[1]]
+      
+      # Extract components
+      specialty <- components[1]
+      case_id <- components[which(components == "Case") + 1]
+      language <- components[which(components == "Case") + 2]
+      generator <- ifelse(length(components) > (which(components == "Case") + 2), components[length(components)], "Human")
+    }
 
     # Process the text content
     tibble(specialty = specialty,
@@ -47,8 +60,10 @@ readSummaries <- function(summaries) {
            text = txt)
   }
 
-  # Read and process each summary file
-  summary_list <- lapply(summaries, getSingleSummary)
+  # Read and process each summary file (we merged them with <|!!|> so that it would be easier to split them back into individual summaries)
+  summary_list <- str_split(summaries, fixed("<|!!|>")) |> 
+    unlist() |>
+    lapply(getSingleSummary)
 
   # Combine all summaries into a single tibble
   final_df <- bind_rows(summary_list)

@@ -25,7 +25,7 @@ getFileTibble <- function() {
     tibble(path = _) |>
     filter(!startsWith(path, "Orthopaedics/Svenska/") &
              !str_detect(path, "Cardiology/case_[1-5]_hb/Case [1-5] Lab and Medications_hb.xlsx")) |>
-    filter(endsWith(path, ".docx") | endsWith(path, ".xlsx") | endsWith(path, '.md')) |>
+    filter(endsWith(path, ".docx") | endsWith(path, ".xlsx") | endsWith(path, '.md') | endsWith(path, ".txt")) |>
     mutate(filename = basename(path),
            specialty = str_replace(path, "([^/]+)/.+", "\\1"),
            case_id = case_when(str_detect(filename, "Case_\\d+@[^@]+@[^@]+\\.md") ~ str_replace(filename, "(.*)Case_(\\d+)@.+", "Case \\2"),
@@ -47,6 +47,23 @@ getFileTibble <- function() {
                                 str_detect(path, "Italian") ~ "Italian",
                                 TRUE ~ "original")) |>
     select(-filename)
+  
+  merged_summaries <- case_files |>
+    filter(type == "Summary") |>
+    group_by(specialty, case_id, language) |>
+    filter(specialty == "Orthopaedics" & case_id == "Case 1" & language == "original") |> 
+    summarise(path = paste(path, collapse = "<|!!|>"),
+              specialty = specialty[1],
+              case_id = case_id[1],
+              type = "Summary",
+              language = "original",
+              .groups = "drop")
+  
+  # Append the merged summaries to the case_files instead of the individual summaries
+  case_files <- case_files |>
+    ungroup() |>
+    filter(type != "Summary") |>
+    bind_rows(merged_summaries)
 
   dups <- case_files |>
     add_count(specialty, case_id, type, language) |>
