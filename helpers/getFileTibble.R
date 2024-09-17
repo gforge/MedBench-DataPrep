@@ -50,13 +50,11 @@ getFileTibble <- function() {
   
   merged_summaries <- case_files |>
     filter(type == "Summary") |>
-    group_by(specialty, case_id, language) |>
-    filter(specialty == "Orthopaedics" & case_id == "Case 1" & language == "original") |> 
+    group_by(specialty, case_id, language, type) |>
     summarise(path = paste(path, collapse = "<|!!|>"),
               specialty = specialty[1],
               case_id = case_id[1],
-              type = "Summary",
-              language = "original",
+              language = language[1],
               .groups = "drop")
   
   # Append the merged summaries to the case_files instead of the individual summaries

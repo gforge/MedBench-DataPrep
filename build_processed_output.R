@@ -66,8 +66,8 @@ walk(data2save,
 data2save |> map_chr(\(x) attr(x, "language")) |> unique()
 
 if (FALSE) {
-  ortho_cases <- data2save[which(sapply(data2save, \(x) attributes(x)$specialty == "Orthopaedics"))]
-  ortho_cases[[1]]$medications
+  ortho_cases <- data2save[which(sapply(data2save, \(x) attributes(x)$specialty == "Orthopaedics" & attributes(x)$language == "original"))]
+  jsonlite::toJSON(ortho_cases[[1]])
 
   get_attributes <- function(x) {
     tibble(specialty = attributes(x)$specialty, case_id = attributes(x)$case_id, language = attributes(x)$language)

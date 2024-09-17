@@ -31,7 +31,7 @@ readSummaries <- function(summaries) {
       str_remove("^Summary_4_")
 
     # Split core_name into its components
-    if (str_detect(core_name, "@original@")) {
+    if (str_detect(core_name, "@(original|Swedish)@")) {
       # E.g. original name: Summary_4_Orthopaedics_Case 1@original@gpt-4_turbo-2024-04-09@temp=0.0@basic.txt",
       regex <- "(.*)_Case (\\d+)@([^@]+)@(.*@temp=\\d\\.\\d@.*)$"
       if (!str_detect(core_name, regex)) {
