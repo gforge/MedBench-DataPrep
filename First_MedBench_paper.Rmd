@@ -1,0 +1,56 @@
+---
+title: "First_MedBench_paper"
+author: "Max Gordon"
+date: "2024-09-17"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(Gmisc)
+library(jsonlite)
+library(reticulate)
+```
+
+# Basics
+
+```{r}
+# Load the data
+raw <- read_file("data/output/allData.json") |> fromJSON(simplifyVector = FALSE)
+ortho_cases <- raw |> 
+  keep(\(x) x$specialty == "Orthopaedics") |> 
+  map(\(x) x$charts |> 
+        keep(\(c) length(c$summaries) > 1) |> 
+        map(\(c) list(name = x$name,
+                      specialty = x$specialty,
+                      language = c$language,
+                      summaries = c$summaries)))
+
+ortho_cases[[1]][[1]] |> names()
+ortho_cases[[1]][[1]]$summaries[[1]] |> names()
+
+ortho_summaries <- ortho_cases |> 
+  map(\(case) {
+    map(case,
+        \(chart) {
+            map(chart$summaries,
+                \(summary) list(name = chart$name,
+                                specialty = chart$specialty,
+                                language = chart$language,
+                                generatedBy = summary$generatedBy,
+                                summary = summary$text)) |> 
+            bind_rows()
+        }) |> 
+    bind_rows()
+  }) |> 
+  bind_rows()
+```
+
+```{python}
+print(r["ortho_summaries"])
+```
+
+
