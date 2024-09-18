@@ -1,18 +1,22 @@
 ---
-title: "First_MedBench_paper"
+title: "First MedBench paper"
 author: "Max Gordon"
-date: "2024-09-17"
+date: "2024-09-18"
 output: html_document
 editor_options: 
   chunk_output_type: console
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 library(tidyverse)
 library(Gmisc)
 library(jsonlite)
 library(reticulate)
+```
+
+```{r, include=FALSE}
+py_config()
 ```
 
 # Basics
@@ -28,9 +32,6 @@ ortho_cases <- raw |>
                       specialty = x$specialty,
                       language = c$language,
                       summaries = c$summaries)))
-
-ortho_cases[[1]][[1]] |> names()
-ortho_cases[[1]][[1]]$summaries[[1]] |> names()
 
 ortho_summaries <- ortho_cases |> 
   map(\(case) {
@@ -49,8 +50,93 @@ ortho_summaries <- ortho_cases |>
   bind_rows()
 ```
 
-```{python}
-print(r["ortho_summaries"])
+```{python, echo=FALSE}
+import pandas as pd
+from rouge import Rouge
+from sacrebleu.metrics import BLEU
+
+df = r.ortho_summaries
+
+rouge = Rouge(metrics=['rouge-l'],
+              max_n=2,
+              limit_length=True,
+              length_limit=100,
+              length_limit_type='words',
+              apply_avg=False,
+              apply_best=False,
+              alpha=0.5,  # Default F1_score
+              stemming=True)
+blue = BLEU(effective_order=True)
+
+# Initialize a list to store results
+results = []
+
+# Iterate over each language
+for language in df['language'].unique():
+    df_lang = df[df['language'] == language]
+
+    # Iterate over each case
+    for name in df_lang['name'].unique():
+        df_case = df_lang[df_lang['name'] == name]
+
+        # Get the human summary
+        human_summary_row = df_case[df_case['generatedBy'] == 'Human']
+        if human_summary_row.empty:
+            continue  # Skip if no human summary is available
+        human_summary = human_summary_row['summary'].values[0]
+
+        # Get the generated summaries
+        generated_summaries = df_case[df_case['generatedBy'] != 'Human']
+
+        for idx, row in generated_summaries.iterrows():
+            generated_summary = row['summary']
+            generatedBy = row['generatedBy']
+    
+            # Compute ROUGE scores
+            score = rouge.get_scores(generated_summary, human_summary)
+            rouge_l = score['rouge-l'][0]
+            
+            # Compute BLEU scores
+            bleu_score = blue.sentence_score(generated_summary, [human_summary])
+            
+            # Store the results
+            result = {
+                'name': name,
+                'language': language,
+                'generatedBy': generatedBy,
+                'rouge-l_f': rouge_l['f'][0],
+                'rouge-l_p': rouge_l['p'][0],
+                'rouge-l_r': rouge_l['r'][0],
+                'bleu-score': bleu_score.score,
+                'bleu-bp': bleu_score.bp,
+            }
+            results.append(result)
+
+# Convert results to DataFrame
+results_df = pd.DataFrame(results)
 ```
 
+
+```{r}
+py$results_df |> 
+  group_by(language, generatedBy) |>
+  summarise(
+    across(starts_with("rouge") | starts_with("bleu"), mean)) |> 
+  pivot_longer(cols = -c(language, generatedBy), names_to = "metric", values_to = "value") |> 
+  mutate(type = case_when(str_detect(metric, "rouge") ~ "ROUGE",
+                          str_detect(metric, "bleu") ~ "BLEU"),
+         prompt_type = case_when(str_detect(generatedBy, "@basic") ~ "Simple",
+                                 str_detect(generatedBy, "@decompos") ~ "Decompose"),
+         language = case_when(str_detect(language, "original") ~ "English",
+                              TRUE ~ language),
+         value = txtRound(value, digits = 2)) |>
+  filter(metric %in% c("rouge-l_f", "bleu-score")) |>
+  arrange(language, type, generatedBy) |>
+  tidyHtmlTable(value = value,
+                rnames = prompt_type,
+                rgroup = type,
+                header = language,
+                caption = "ROUGE-L F1 and BLEU scores for generated summaries per language and type",)
+  
+```
 

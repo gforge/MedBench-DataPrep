@@ -163,3 +163,4 @@ cython_debug/
 data/
 .Rhistory
 *.zip
+*.html
