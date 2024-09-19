@@ -4,7 +4,7 @@ author: "Max Gordon"
 date: "2024-09-18"
 output: html_document
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ```{r setup, include=FALSE}
@@ -13,6 +13,7 @@ library(tidyverse)
 library(Gmisc)
 library(jsonlite)
 library(reticulate)
+library(glue)
 ```
 
 ```{r, include=FALSE}
@@ -40,9 +41,32 @@ ortho_summaries <- ortho_cases |>
             map(chart$summaries,
                 \(summary) list(name = chart$name,
                                 specialty = chart$specialty,
-                                language = chart$language,
+                                chart_language = chart$language,
                                 generatedBy = summary$generatedBy,
                                 summary = summary$text)) |> 
+            bind_rows()
+        }) |> 
+    bind_rows()
+  }) |> 
+  bind_rows()
+
+ortho_reviews <- ortho_cases |> 
+  map(\(case) {
+    map(case,
+        \(chart) {
+            map(chart$summaries,
+                \(summary) {
+                  map(summary$reviews,
+                      \(review) {
+                        tibble(name = chart$name,
+                               specialty = chart$specialty,
+                               chart_language = chart$language,
+                               generatedBy = summary$generatedBy,
+                               reviewer = glue("{review$user$firstName} {review$user$lastName}")) |> 
+                        bind_cols(as.data.frame(review$rating))
+                      }) |> 
+                    bind_rows() 
+                  }) |> 
             bind_rows()
         }) |> 
     bind_rows()
@@ -72,8 +96,8 @@ blue = BLEU(effective_order=True)
 results = []
 
 # Iterate over each language
-for language in df['language'].unique():
-    df_lang = df[df['language'] == language]
+for language in df['chart_language'].unique():
+    df_lang = df[df['chart_language'] == language]
 
     # Iterate over each case
     for name in df_lang['name'].unique():
@@ -102,7 +126,7 @@ for language in df['language'].unique():
             # Store the results
             result = {
                 'name': name,
-                'language': language,
+                'chart_language': language,
                 'generatedBy': generatedBy,
                 'rouge-l_f': rouge_l['f'][0],
                 'rouge-l_p': rouge_l['p'][0],
@@ -118,25 +142,165 @@ results_df = pd.DataFrame(results)
 
 
 ```{r}
+fix_labels <- function(x) {
+  mutate(x,
+         prompt_type = case_when(str_detect(generatedBy, "@basic") ~ "Simple",
+                                 str_detect(generatedBy, "@decompos") ~ "Decompose",
+                                 startsWith(generatedBy, "Human") ~ "Human"),
+         chart_language = case_when(str_detect(chart_language, "original") ~ "English",
+                                    TRUE ~ chart_language)) |> 
+    select(-generatedBy) |> 
+    relocate(prompt_type, .after = chart_language)
+}
+
 py$results_df |> 
-  group_by(language, generatedBy) |>
-  summarise(
-    across(starts_with("rouge") | starts_with("bleu"), mean)) |> 
-  pivot_longer(cols = -c(language, generatedBy), names_to = "metric", values_to = "value") |> 
+  group_by(chart_language, generatedBy) |>
+  summarise(across(starts_with("rouge") | starts_with("bleu"), mean),
+            .groups = "drop") |> 
+  pivot_longer(cols = -c(chart_language, generatedBy), names_to = "metric", values_to = "value") |> 
   mutate(type = case_when(str_detect(metric, "rouge") ~ "ROUGE",
                           str_detect(metric, "bleu") ~ "BLEU"),
-         prompt_type = case_when(str_detect(generatedBy, "@basic") ~ "Simple",
-                                 str_detect(generatedBy, "@decompos") ~ "Decompose"),
-         language = case_when(str_detect(language, "original") ~ "English",
-                              TRUE ~ language),
          value = txtRound(value, digits = 2)) |>
+  fix_labels() |>
   filter(metric %in% c("rouge-l_f", "bleu-score")) |>
-  arrange(language, type, generatedBy) |>
+  arrange(chart_language, type, prompt_type) |>
   tidyHtmlTable(value = value,
                 rnames = prompt_type,
                 rgroup = type,
-                header = language,
-                caption = "ROUGE-L F1 and BLEU scores for generated summaries per language and type",)
-  
+                header = chart_language,
+                caption = "ROUGE-L F1 and BLEU scores for generated summaries per language and type")
 ```
 
+# Review ratings
+
+```{r}
+no_reviewers <- ortho_reviews |> count(reviewer) |> nrow()
+no_english_reviews <- ortho_reviews |> filter(chart_language == "original") |> count(reviewer) |> nrow()
+no_swedish_reviews <- ortho_reviews |> filter(chart_language == "Swedish") |> count(reviewer) |> nrow()
+
+score <- list(
+  overall = ortho_reviews |> pull(overall) |> mean(),
+  overall_english = ortho_reviews |> filter(chart_language == "original") |> pull(overall) |> mean(),
+  overall_swedish = ortho_reviews |> filter(chart_language == "Swedish") |> pull(overall) |> mean()
+) |> 
+  sapply(txtRound, digits = 1, simplify = FALSE)
+```
+
+We have `r nrow(ortho_reviews)` ratings from `r no_reviewers` reviewers. For English charts we have a total of `r no_english_reviews` reviewers, while for Swedish charts we have `r no_swedish_reviews` reviewers The overall rating is `r score$overall`, while the average rating for English charts is `r score$overall_english` and for Swedish charts `r score$overall_swedish`.
+
+```{r radar_data}
+radar_data <- ortho_reviews |> 
+  fix_labels() |> 
+  select(-version, -ends_with("Comment"), -hallucinations) |> 
+  pivot_longer(cols = where(is.integer), names_to = "metric", values_to = "value") |>
+  group_by(chart_language, prompt_type, metric) |>
+  summarise(value = mean(value, na.rm =TRUE), .groups = "drop") |> 
+  mutate(metric = case_when(metric == "hospitalCourse" ~ "Hospital course",
+                            metric == "medicalHistory" ~ "Medical history",
+                            metric == "followUp" ~ "Follow-up",
+                            TRUE ~ Hmisc::capitalize(metric))) |> 
+  pivot_wider(names_from = metric, values_from = value)
+
+max_min <- radar_data |> 
+  select(where(is.numeric)) |> 
+  apply(2, function(x) c(4, 1)) |> 
+  as.data.frame()
+
+# Combine max, min, and actual data for radar chart
+radar_data <- bind_rows(max_min, 
+                        radar_data)
+```
+
+```{r}
+library(fmsb)
+
+plot_radar <- function(x, language) {
+  data <- x |> 
+    filter(chart_language == language | is.na(chart_language)) |> 
+    mutate(order = case_when(is.na(prompt_type) ~ 1,
+                             prompt_type == "Human" ~ 2,
+                             TRUE ~ 10)) |> 
+    arrange(order) |>
+    select(-order, -chart_language)
+    
+  legends <- data$prompt_type |> 
+    na.omit() |> 
+    unique()
+  
+  main_colors <- RColorBrewer::brewer.pal(8, "Set2")[1:length(legends)] |>
+    col2rgb() |> 
+    t()
+  colors_border <- rgb(main_colors, alpha = 0.9*255, maxColorValue = 255)
+  colors_in <- rgb(main_colors, alpha = 0.4*255, maxColorValue = 255)
+  
+  data |> 
+    select(-prompt_type) |> 
+    radarchart(axistype = 1,
+               maxmin = TRUE,
+               # Customize the polygon colors
+               pcol = colors_border,
+               pfcol = colors_in,
+               plwd = 4,
+               # Customize the grid colors
+               cglcol = "grey", 
+               cglty = 1, 
+               axislabcol = "grey", 
+               caxislabels = seq(0, 5, 1), 
+               cglwd = 0.8,
+               # Customize labels
+               vlcex = 0.8,
+               title = language,
+    )
+  
+  par(xpd = TRUE)
+  legend(c(0.5,1), 
+         legend = legends, 
+         col = colors_border,
+         pch = 20, 
+         bty = "n",
+         cex = 0.8)
+}
+
+per_language_radar <- function(x) {
+  languages <- x$chart_language |> 
+    na.omit() |> 
+    unique()
+  
+  # Split the screen into multiple columns (one per language)
+  org_par <- par(mfrow = c(1, length(languages)),
+                 mar = rep(0.8, 4),  # Outer margins for the overall plot space
+                 oma = rep(0.2, 4))  # Outer margins for the overall plot space
+  on.exit(par(org_par))  # Reset to original layout
+  
+  for (language in languages) {
+    plot_radar(x, language)
+  }
+}
+```
+
+# Medical accuracy
+
+```{r, fig.height=6, fig.width=16}
+radar_data |> 
+  select(chart_language, 
+         prompt_type, 
+         Diagnosis,
+         `Medical history`,
+         `Hospital course`,
+         `Follow-up`) |> 
+  per_language_radar()
+```
+
+
+# Linguistic qualities
+
+```{r, fig.height=6, fig.width=16}
+radar_data |> 
+  select(chart_language, 
+         prompt_type, 
+         Conciseness,
+         Completeness,
+         Language,
+         Clarity) |> 
+  per_language_radar()
+```
