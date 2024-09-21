@@ -27,7 +27,9 @@ merge_into_single_markdown <- local({
     if (is.null(lab)) return(NULL)
     
     lab |>
-      mutate(timestamp = ymd_hm(paste(toString(date), time))) |> 
+      mutate(date = map_chr(date, toString),
+             timestamp = paste(date, time),
+             timestamp = ymd_hm(timestamp)) |> 
       group_by(timestamp) |>
       # Build a bullet list of the lab values
       summarise(content = paste0(" * ", labTest, " ", value, " ", unit,
@@ -42,7 +44,12 @@ merge_into_single_markdown <- local({
       word_data <- process_word_data(data$notes)
       medications_data <- process_medications_data(data$medications)
       lab_values_data <- process_lab_values_data(data$lab)
-    }, error = function(e) {
+    }, 
+    warning = function(w) {
+      print(w)
+      browser()
+    },
+    error = function(e) {
       stop("Error reading data: ", e$message, "\n for case: ", data$case_id, " for ", data$specialty)
     })
     
