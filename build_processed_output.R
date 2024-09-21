@@ -13,6 +13,7 @@ source("./helpers/readSummaries.R")
 source("./helpers/merge_and_format_data.R")
 source("./helpers/convert2markdown_list.R")
 source("./helpers/merge_into_single_markdown.R")
+source("./helpers/extend_with_platform_JSON.R")
 
 # Create directories if they don't exist
 dir.create("data/processed", showWarnings = FALSE)
@@ -35,7 +36,8 @@ data2save <- getFileTibble() |>
   lapply(\(x) {
     merge_and_format_data(x) |>
       structure(specialty = x$specialty, case_id = x$case_id, language = x$language)
-  })
+  }) |> 
+  extend_with_platform_JSON()
 
 # Check for errors in the data
 errors <- lapply(data2save, find_invalid_case_data) |> unlist()
