@@ -4,7 +4,7 @@ author: "Max Gordon"
 date: "2024-09-18"
 output: html_document
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r setup, include=FALSE}
@@ -25,16 +25,16 @@ py_config()
 ```{r}
 # Load the data
 raw <- read_file("data/output/allData.json") |> fromJSON(simplifyVector = FALSE)
-ortho_cases <- raw |> 
-  keep(\(x) x$specialty == "Orthopaedics") |> 
+cases <- raw |> 
   map(\(x) x$charts |> 
         keep(\(c) length(c$summaries) > 1) |> 
         map(\(c) list(name = x$name,
                       specialty = x$specialty,
                       language = c$language,
-                      summaries = c$summaries)))
+                      summaries = c$summaries))) |> 
+  discard(is_empty)
 
-ortho_summaries <- ortho_cases |> 
+summaries <- cases |> 
   map(\(case) {
     map(case,
         \(chart) {
@@ -50,7 +50,7 @@ ortho_summaries <- ortho_cases |>
   }) |> 
   bind_rows()
 
-ortho_reviews <- ortho_cases |> 
+reviews <- cases |> 
   map(\(case) {
     map(case,
         \(chart) {
@@ -75,11 +75,12 @@ ortho_reviews <- ortho_cases |>
 ```
 
 ```{python, echo=FALSE}
+from dataclasses import dataclass, asdict
 import pandas as pd
 from rouge import Rouge
 from sacrebleu.metrics import BLEU
 
-df = r.ortho_summaries
+df = r.summaries
 
 rouge = Rouge(metrics=['rouge-l'],
               max_n=2,
@@ -92,58 +93,89 @@ rouge = Rouge(metrics=['rouge-l'],
               stemming=True)
 blue = BLEU(effective_order=True)
 
-# Initialize a list to store results
-results = []
+# Define the data structure for each result row
+@dataclass
+class SummaryResult:
+    specialty: str
+    name: str
+    chart_language: str
+    generatedBy: str
+    rouge_l_f: float
+    rouge_l_p: float
+    rouge_l_r: float
+    bleu_score: float
+    bleu_bp: float
 
-# Iterate over each language
-for language in df['chart_language'].unique():
-    df_lang = df[df['chart_language'] == language]
+# Function to calculate scores and return a dataclass instance
+def calculate_scores_and_store_results(
+    human_summary: str, 
+    generated_summary: str, 
+    specialty: str, 
+    name: str, 
+    language: str, 
+    generatedBy: str
+) -> SummaryResult:
+    # Compute ROUGE scores
+    score = rouge.get_scores(generated_summary, human_summary)
+    rouge_l = score['rouge-l'][0]
+    
+    # Compute BLEU scores
+    bleu_score = blue.sentence_score(generated_summary, [human_summary])
 
-    # Iterate over each case
-    for name in df_lang['name'].unique():
-        df_case = df_lang[df_lang['name'] == name]
+    # Return an instance of SummaryResult dataclass
+    return SummaryResult(
+        specialty=specialty,
+        name=name,
+        chart_language=language,
+        generatedBy=generatedBy,
+        rouge_l_f=rouge_l['f'][0],
+        rouge_l_p=rouge_l['p'][0],
+        rouge_l_r=rouge_l['r'][0],
+        bleu_score=bleu_score.score,
+        bleu_bp=bleu_score.bp,
+    )
 
+# Main function to process the DataFrame
+def retrieve_summary_text_scores(df: pd.DataFrame) -> pd.DataFrame:
+    results: list[SummaryResult] = []
+
+    # Iterate using groupby to avoid unnecessary nested loops
+    for (specialty, language, name), df_case in df.groupby(['specialty', 'chart_language', 'name']):
         # Get the human summary
         human_summary_row = df_case[df_case['generatedBy'] == 'Human']
         if human_summary_row.empty:
             continue  # Skip if no human summary is available
+
         human_summary = human_summary_row['summary'].values[0]
 
-        # Get the generated summaries
+        # Get the generated summaries (all except 'Human')
         generated_summaries = df_case[df_case['generatedBy'] != 'Human']
 
         for idx, row in generated_summaries.iterrows():
-            generated_summary = row['summary']
-            generatedBy = row['generatedBy']
-    
-            # Compute ROUGE scores
-            score = rouge.get_scores(generated_summary, human_summary)
-            rouge_l = score['rouge-l'][0]
-            
-            # Compute BLEU scores
-            bleu_score = blue.sentence_score(generated_summary, [human_summary])
-            
-            # Store the results
-            result = {
-                'name': name,
-                'chart_language': language,
-                'generatedBy': generatedBy,
-                'rouge-l_f': rouge_l['f'][0],
-                'rouge-l_p': rouge_l['p'][0],
-                'rouge-l_r': rouge_l['r'][0],
-                'bleu-score': bleu_score.score,
-                'bleu-bp': bleu_score.bp,
-            }
+            # Calculate scores and store the result as a dataclass instance
+            result = calculate_scores_and_store_results(
+                human_summary=human_summary, 
+                generated_summary=row['summary'],
+                specialty=specialty, 
+                name=name, 
+                language=language, 
+                generatedBy=row['generatedBy']
+            )
             results.append(result)
 
+    # Convert list of dataclass instances to DataFrame
+    return pd.DataFrame([asdict(result) for result in results])
+
 # Convert results to DataFrame
-results_df = pd.DataFrame(results)
+results_df = retrieve_summary_text_scores(df)
 ```
 
 
 ```{r}
 fix_labels <- function(x) {
   mutate(x,
+         generatedBy = case_when(startsWith(generatedBy, "$") ~ str_replace(generatedBy, "^\\$", ""),
+                                 TRUE ~ generatedBy),
          prompt_type = case_when(str_detect(generatedBy, "@basic") ~ "Simple",
                                  str_detect(generatedBy, "@decompos") ~ "Decompose",
                                  startsWith(generatedBy, "Human") ~ "Human"),
@@ -154,15 +186,15 @@ fix_labels <- function(x) {
 }
 
 py$results_df |> 
-  group_by(chart_language, generatedBy) |>
+  fix_labels() |>
+  group_by(chart_language, prompt_type) |>
   summarise(across(starts_with("rouge") | starts_with("bleu"), mean),
             .groups = "drop") |> 
-  pivot_longer(cols = -c(chart_language, generatedBy), names_to = "metric", values_to = "value") |> 
+  pivot_longer(cols = -c(chart_language, prompt_type), names_to = "metric", values_to = "value") |> 
   mutate(type = case_when(str_detect(metric, "rouge") ~ "ROUGE",
                           str_detect(metric, "bleu") ~ "BLEU"),
          value = txtRound(value, digits = 2)) |>
-  fix_labels() |>
-  filter(metric %in% c("rouge-l_f", "bleu-score")) |>
+  filter(metric %in% c("rouge_l_f", "bleu_score")) |>
   arrange(chart_language, type, prompt_type) |>
   tidyHtmlTable(value = value,
                 rnames = prompt_type,
