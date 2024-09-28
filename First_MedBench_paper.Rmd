@@ -185,22 +185,74 @@ fix_labels <- function(x) {
     relocate(prompt_type, .after = chart_language)
 }
 
-py$results_df |> 
-  fix_labels() |>
-  group_by(chart_language, prompt_type) |>
+df <- py$results_df |> 
+  fix_labels() |> 
+  rename(language = chart_language)
+
+df |> 
+  group_by(language, prompt_type) |>
   summarise(across(starts_with("rouge") | starts_with("bleu"), mean),
             .groups = "drop") |> 
-  pivot_longer(cols = -c(chart_language, prompt_type), names_to = "metric", values_to = "value") |> 
+  pivot_longer(cols = -c(language, prompt_type), names_to = "metric", values_to = "value") |> 
   mutate(type = case_when(str_detect(metric, "rouge") ~ "ROUGE",
                           str_detect(metric, "bleu") ~ "BLEU"),
          value = txtRound(value, digits = 2)) |>
   filter(metric %in% c("rouge_l_f", "bleu_score")) |>
-  arrange(chart_language, type, prompt_type) |>
+  arrange(language, type, prompt_type) |>
   tidyHtmlTable(value = value,
                 rnames = prompt_type,
                 rgroup = type,
-                header = chart_language,
+                header = language,
                 caption = "ROUGE-L F1 and BLEU scores for generated summaries per language and type")
+```
+
+```{r}
+library(lme4)
+library(broom.mixed)
+library(kableExtra)
+
+# Data preparation using the built-in pipe and across
+df <- df |>
+  mutate(across(c(specialty, language, prompt_type), as.factor),
+         case_id = interaction(specialty, name))  # Create unique case_id for each specialty + name
+
+output_mixed_model <- function(m, outcome) {
+  # Get model results with confidence intervals
+  model_summary <- broom.mixed::tidy(m, conf.int = TRUE)
+  
+  # Add a column to indicate reference levels for categorical variables
+  model_summary |> 
+    mutate(
+      term = case_when(
+        term == "(Intercept)" ~ "(Intercept) [Reference: Medicine, English, Decompose]",
+        term == "specialtyOrthopaedics" ~ "Orthopaedics [vs. Medicine]",
+        term == "languageSwedish" ~ "Swedish [vs. English]",
+        term == "prompt_typeSimple" ~ "Simple [vs. Decompose]",
+        TRUE ~ term
+      )
+    ) |> 
+    filter(is.na(group)) |>   # Remove the random effect
+    select(term, estimate, std.error, conf.low, conf.high) |> 
+    rename(
+      "Term" = term,
+      "Estimate" = estimate,
+      "Std. Error" = std.error,
+      "Lower CI" = conf.low,
+      "Upper CI" = conf.high
+    ) |>
+    mutate(across(where(is.numeric), \(x) htmlTable::txtRound(x, 2))) |> 
+    kable("html", caption = glue::glue("Mixed Model Results with Confidence Intervals for outcome {outcome}")) |> 
+    kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover")) |> 
+    print()
+}
+
+# Fit a mixed model for rouge_l_f with random intercept for case_id
+lmer(rouge_l_f ~ specialty + language + prompt_type + (1 | case_id), data = df) |> 
+  output_mixed_model("ROUGE-L F1")
+
+# Fit a mixed model for bleu_score with random intercept for case_id
+lmer(bleu_score ~ specialty + language + prompt_type + (1 | case_id), data = df) |> 
+  output_mixed_model("BLEU")
 ```
 
 # Review ratings
