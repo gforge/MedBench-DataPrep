@@ -34,12 +34,27 @@ build_chart_from_JSON_data <- function(chart,
     }
     
     if (hasData(chart$summaries)) {
-      ret$summaries <- chart$summaries |> 
+      unique_summaries <- chart$summaries |> 
+        # Drop any reviews
+        map(\(x) {
+          x$reviews <- NULL; 
+          x
+        }) |>
         map(as_tibble) |> 
         bind_rows() |> 
-        mutate(specialty = chart$specialty, language=chart$language, name = chart$caseId) |> 
+        mutate(specialty = chart$specialty, language=chart$language, name = chart$name) |> 
         extract(colnames4chart$summaryColumns) |>
         distinct() # Remove duplicates as each review has its own summary (although identical)
+      
+      if (hasData(ret$summaries)) {
+        non_matching_summaries <- ret$summaries |> 
+          anti_join(unique_summaries, by = "generatedBy")
+        unique_summaries <- bind_rows(ret$summaries, unique_summaries) |> 
+          distinct()
+      }
+      
+      ret$summaries <- unique_summaries
+      
     }
   }, error = function(e) {
     print(e)

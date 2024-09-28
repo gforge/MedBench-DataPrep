@@ -39,6 +39,14 @@ data2save <- getFileTibble() |>
   }) |> 
   extend_with_platform_JSON()
 
+incomplete_cases <- data2save |> 
+  map_lgl(\(x) any(x$notes$content == "")) |> 
+  which()
+if (length(incomplete_cases) > 0) {
+  cat("Incomplete cases found:\n", incomplete_cases |> paste(collapse = "\n"))
+  data2save <- data2save[-incomplete_cases]
+}
+
 # Check for errors in the data
 errors <- lapply(data2save, find_invalid_case_data) |> unlist()
 if (length(errors) > 0) {

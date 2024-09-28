@@ -32,16 +32,18 @@ readSummaries <- function(summaries) {
 
     # Split core_name into its components
     if (str_detect(core_name, "@(original|Swedish)@")) {
-      # E.g. original name: Summary_4_Orthopaedics_Case 1@original@gpt-4_turbo-2024-04-09@temp=0.0@basic.txt",
-      regex <- "(.*)_Case (\\d+)@([^@]+)@(.*@temp=\\d\\.\\d@.*)$"
-      if (!str_detect(core_name, regex)) {
+      # E.g. original name: Summary_4_Orthopaedics_Case 1@original@gpt-4_turbo-2024-04-09@temp=0.0@basic.txt
+      #                     where Summary_4_ and .txt is stripped as outlined above
+      regex <- "^(?<specialty>.+|)_Case (?<no>\\d+)@(?<language>[^@]+)@(?<generator>.*@temp=\\d\\.\\d@.*)$"
+
+      match <- str_match(core_name, regex)
+      if (any(apply(match, 1, is.na))) {
         stop("Invalid file name format: ", core_name)
       }
-      
-      specialty <- str_match(core_name, regex)[, 2]
-      case_id <- str_match(core_name, regex)[, 3]
-      language <- str_match(core_name, regex)[, 4]
-      generator <- str_match(core_name, regex)[, 5]
+      specialty <- match[, "specialty"]
+      case_id <- match[, "no"]
+      language <- match[, "language"]
+      generator <- match[, "generator"]
     } else {
       components <- str_split(core_name, "_")[[1]]
       
