@@ -8,7 +8,7 @@ editor_options:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.dpi=300)
 library(tidyverse)
 library(Gmisc)
 library(jsonlite)
@@ -19,6 +19,7 @@ library(broom.mixed)
 library(kableExtra)
 library(boot)
 library(fmsb)
+library(ggpubr)
 
 use_condaenv("base")
 ```
@@ -37,6 +38,7 @@ versions <- list(R = paste(version$major, version$minor, sep="."),
                  broom.mixed = packageVersion("broom.mixed"),
                  boot = packageVersion("boot"),
                  fmsb = packageVersion("fmsb"),
+                 ggpubr = packageVersion("ggpubr"),
                  ggplot2 = packageVersion("ggplot2"),
                  python = py_config()$version_string |> str_replace("\\|.+", ""),
                  sacrebleu = py$sacrebleu_version,
@@ -51,7 +53,7 @@ Statistical analyses were conducted using R version `r versions$R` and Python `r
 
 Due to the hierarchical nature of the data we used linear mixed effects models. The mixed-effects models were fitted using the lme4 package (version `r versions$lme4`) and broom.mixed (version `r versions$broom.mixed`) in R. For the BLEU/ROUGE-L metrics we used specialty combined with case id as random effect, while for manual evaluation output we used reviewer id as the mixed effect variable. Model estimates, standard errors, and 95% confidence intervals were calculated for the fixed effects. Statistical significance was assessed at a threshold of p < 0.05.
 
-Bootstrap methods with 1,000 resamples were employed using the boot package (version `r versions$boot`) in R to calculate percentile-based 95% confidence intervals for mean scores. Basic statistical summaries derived from the bootstrapping were presented prior to the advanced analyses to provide an overview of the data distributions. Data visualization was performed using ggplot2 (version `r versions$ggplot2`) and fmsb (version `r versions$fmsb`) packages in R.
+Bootstrap methods with 1,000 resamples were employed using the boot package (version `r versions$boot`) in R to calculate percentile-based 95% confidence intervals for mean scores. Basic statistical summaries derived from the bootstrapping were presented prior to the advanced analyses to provide an overview of the data distributions. Data visualization was performed using ggplot2 (version `r versions$ggplot2`) and ggpubr (version `r versions$ggpubr`) in R.
 
 ```{r helper-functions}
 output_mixed_model <- function(m, outcome, summary_fn = NULL, digits = 2) {
@@ -127,13 +129,37 @@ fix_factors <- function(x) {
 ```{r prep_data}
 # Load the data
 raw <- read_file("data/output/allData.json") |> fromJSON(simplifyVector = FALSE)
-cases <- raw |> 
+
+raw_with_datasets <- raw |> 
   map(\(x) x$charts |> 
-        keep(\(c) length(c$summaries) > 1) |> 
-        map(\(c) list(name = x$name,
-                      specialty = x$specialty,
-                      language = c$language,
-                      summaries = c$summaries))) |> 
+        map(function(chart) {
+          list(name = x$name,
+               specialty = x$specialty,
+               language = chart$language,
+               status = chart$status,
+               createdBy = chart$createdBy,
+               summaries = chart$summaries,
+               notes = bind_rows(chart$notes),
+               lab_values = bind_rows(chart$lab),
+               medications = bind_rows(chart$medications)) |> 
+            map(\(x) {
+              if (!is_tibble(x)) {
+                return(x)
+              }
+              
+              x |> 
+                select(!one_of("__typename", "id", "chartId"))
+              
+            })
+        }))
+
+cases <- raw_with_datasets |> 
+  map(\(x) x |> 
+        keep(\(chart) length(chart$summaries) > 1) |> 
+        map(\(chart) list(name = chart$name,
+                          specialty = chart$specialty,
+                          language = chart$language,
+                          summaries = chart$summaries))) |> 
   discard(is_empty)
 
 summaries <- cases |> 
@@ -201,7 +227,7 @@ bootstrap_ci <- function(data, R = 1000, conf_level = 0.95) {
     with(glue::glue("{mean} (95% CI {lower_ci} - {upper_ci})"))
 }
 
-base_stats <- list(cases = raw |> length(),
+base_stats <- list(cases = raw_with_datasets |> length(),
                    cases_with_summaries = summaries |> distinct(name, specialty, chart_language) |> nrow(),
                    unique_cases_with_summaries = summaries |> distinct(name, specialty) |> nrow(),
                    reviewers = reviews |> count(reviewer) |> nrow(),
@@ -217,7 +243,73 @@ base_stats <- list(cases = raw |> length(),
 
 # Results
 
-For the `r base_stats$no_cases` cases, we have reviewed summaries for `r base_stats$no_cases_with_summaries` cases (`r base_stats$no_unique_cases_with_summaries` unique cases). The cases were reviewed by `r base_stats$no_reviewers` reviewers, amounting to a total of `r nrow(reviews)` ratings. For English charts we have a total of `r base_stats$no_english_reviews` reviewers, while for Swedish charts we have `r base_stats$no_swedish_reviews` reviewers The overall rating is `r base_stats$score_overall`, while the average rating for English charts is `r base_stats$score_overall_english` and for Swedish charts `r base_stats$score_overall_swedish`.
+For the `r base_stats$no_cases` cases (see Table 2 for dataset description), we have reviewed summaries for `r base_stats$no_cases_with_summaries` cases (`r base_stats$no_unique_cases_with_summaries` unique cases). The cases were reviewed by `r base_stats$no_reviewers` reviewers, amounting to a total of `r nrow(reviews)` ratings. For English charts we have a total of `r base_stats$no_english_reviews` reviewers, while for Swedish charts we have `r base_stats$no_swedish_reviews` reviewers The overall rating is `r base_stats$score_overall`, while the average rating for English charts is `r base_stats$score_overall_english` and for Swedish charts `r base_stats$score_overall_swedish`.
+
+```{r Table 2 - language counts}
+get_median_min_max <- function(x) {
+  glue::glue("{median} ({min}&#8209;{max})",
+             median = median(x),
+             min = min(x),
+             max = max(x))
+}
+
+raw_with_datasets |> 
+  map(\(x) map(x,
+               \(chart) {
+                 list(name = chart$name,
+                      specialty = chart$specialty,
+                      language = chart$language,
+                      status = chart$status,
+                      no_notes = chart$notes |> nrow(),
+                      no_medications = chart$medications |> nrow(),
+                      no_lab_values = chart$lab_values |> nrow(),
+                      length_of_stay = chart$notes |> 
+                        summarise(los = as.numeric(difftime(max(date), min(date), units = "days"))) |> 
+                        pull(los))
+               }) |> 
+        bind_rows() |> 
+        filter(status != "NOT_FINISHED") |> 
+        mutate(language = case_when(language == "original" ~ "English",
+                                    TRUE ~ language),
+               sort_order = case_when(language == "English" ~ "1",
+                                      TRUE ~ language)) |> 
+        arrange(sort_order) |> 
+        mutate(language = paste(language, collapse = ", ")) |> 
+        select(-sort_order) |>
+        # The languages don't always match in no. of 
+        slice_head(n = 1)) |>
+  bind_rows() |> 
+  group_by(specialty) |> 
+  summarise(`header_Cases` = name |> unique() |> length() |> as.character(),
+            header_Languages = language |> unique(),
+            `header_Length of stay` = get_median_min_max(length_of_stay),
+            `header_No. of notes` = get_median_min_max(no_notes),
+            `header_No. of medications` = get_median_min_max(no_medications),
+            `header_No. of lab values` = get_median_min_max(no_lab_values),
+            .groups = "drop") |> 
+  pivot_longer(cols = starts_with("header_"),
+               names_to = "header",
+               names_prefix = "header_",
+               values_to = "value") |> 
+  mutate(specialty = case_when(specialty == "Orthopaedics" ~ "Orthopaedic surgery",
+                               TRUE ~ specialty),
+         cgroup = case_when(startsWith(header, "No.") ~ "Counts (median and range)",
+                            TRUE ~ ""),
+         header = case_when(startsWith(header, "No.") ~ str_replace(header,
+                                                                    "No. of",
+                                                                    "") |> 
+                              str_trim() |> 
+                              Hmisc::capitalize(),
+                            TRUE ~ header)) |>
+  tidyHtmlTable(rnames = specialty,
+                value = value,
+                header = header,
+                cgroup = cgroup,
+                align = "l",
+                # Vertical align to top
+                css.cell = "vertical-align: top;")
+```
+**Table 2: Description of the dataset. The table shows the number of cases, the languages used in the cases, the length of stay, the number of notes, medications, and lab values. The values are presented as the median and range.**
 
 
 ```{python python-metrics, echo=FALSE}
@@ -375,9 +467,9 @@ overall_output <- reviews |>
                                               )))
 ```
 
-For the overall rating of the summaries, none of the summaries deemed unusable were generated by humans and the majority of them were regarded as at least average or above. When modelling the score as a continuous variable using mixed regression we found that the LLM estimates were on average lower than the human ones, `r toString(overall_output, "LLM [vs. Human]")` and this was even more pronounced for the Swedish summaries, `r toString(overall_output, "Interaction: Swedish & LLM")`. Similarly the BLEU and ROUGE-L metrics dropped when comparing the LLM to the human summaries, `r toString(metrics_regression_outputs$bleu, "Swedish [vs. English]")` and `r toString(metrics_regression_outputs$rouge, "Swedish [vs. English]")` respectively.
+For the overall rating of the summaries, none of the summaries deemed unusable were generated by humans and the majority of them were regarded as at least average or above (Figure 1). When modelling the score as a continuous variable using mixed regression we found that the LLM estimates were on average lower than the human ones, `r toString(overall_output, "LLM [vs. Human]")` and this was even more pronounced for the Swedish summaries, `r toString(overall_output, "Interaction: Swedish & LLM")`. Similarly the BLEU and ROUGE-L metrics dropped when comparing the LLM to the human summaries, `r toString(metrics_regression_outputs$bleu, "Swedish [vs. English]")` and `r toString(metrics_regression_outputs$rouge, "Swedish [vs. English]")` respectively, see Table 3.
 
-```{r}
+```{r overall_grap, fig.cap="Figure 1: Overall rating of the summaries by chart language and prompt type."}
 colors <- c("Human" = "#7fbf7b", "Multistep" = "#af8dc3", "Singel" = "#e7d4e8")
 clean_reviews |> 
   select(chart_language, prompt_type, overall) |> 
@@ -426,7 +518,7 @@ df |>
                 caption = "ROUGE-L F1 and BLEU scores for generated summaries per language and type")
 ```
 
-For the specific domains we found that follow-up in general was worse for the LLM-generated models. Both human and LLM generated poorly in regards to medications, although for the human notes this was frequently not present due to it not being a part of a standard orthopedic discharge note. In general, most LLM summaries performed worse in Swedish and followed the same pattern as indicated by the overall score.
+For the specific domains we found that follow-up in general was worse for the LLM-generated models. Both human and LLM generated poorly in regards to medications, although for the human notes this was frequently not present due to it not being a part of a standard orthopedic discharge note. In general, most LLM summaries performed worse in Swedish and followed the same pattern as indicated by the overall score (Figure 2). Regarding hallucinations these were more prevalent in the LLM generated summaries, often appearing in the follow-up plan with follow-up recommendations not present in the provided health record or the prompt instructions. Regarding hallucinations these were more prevalent in the LLM generated summaries, often appearing in the follow-up plan with follow-up recommendations not present in the provided health record or the prompt instructions (Figure 3).
 
 ```{r}
 prepped_data <- clean_reviews |> 
@@ -451,9 +543,7 @@ radar_data <- bind_rows(max_min,
                         prepped_data)
 ```
 
-```{r}
-library(fmsb)
-
+```{r radar_plot_helpers}
 plot_radar <- function(x, language) {
   data <- x |> 
     filter(chart_language == language | is.na(chart_language)) |> 
@@ -520,7 +610,7 @@ per_language_radar <- function(x) {
 
 ## Medical accuracy
 
-```{r, fig.height=6, fig.width=16}
+```{r radar_plot_medical_accuracy, fig.height=6, fig.width=16}
 radar_data |> 
   select(chart_language, 
          prompt_type, 
@@ -533,7 +623,7 @@ radar_data |>
 
 ## Linguistic qualities
 
-```{r, fig.height=6, fig.width=16}
+```{r radar_linguistics_medical_accuracy, fig.height=6, fig.width=16}
 radar_data |> 
   select(chart_language, 
          prompt_type, 
@@ -543,6 +633,40 @@ radar_data |>
          Clarity) |> 
   per_language_radar()
 ```
+
+# Dot chart
+
+```{r dot_chart, fig.height=6, fig.width=9, fig.cap="Average scores for each metric by prompt type and language."}
+prepped_data |> 
+  select(-Overall) |> 
+  pivot_longer(cols = where(is.numeric), 
+               names_to = "metric", 
+               values_to = "value") |> 
+  ggdotchart(x = "metric", 
+             y = "value", 
+             color = "prompt_type",
+             group = "prompt_type",
+             data = _, 
+             dot.size = 3, 
+             position = position_dodge(0.5),
+             add = "segment",
+             sort = "ascending",
+             ylab = "Average score",
+             xlab = "Metric") +
+  scale_color_manual(values = colors,
+                     name = "Prompt type") +
+  facet_grid(chart_language~.) +
+  guides(color = guide_legend(override.aes = list(size = 5)))  +
+  theme(text = element_text(size = 14),
+        # Rotate x-axis labels
+        axis.text.x = element_text(angle = 45, hjust = 0.5),
+        strip.text = element_text(size = 16, face = "bold"),
+        # Increase the labels
+        axis.title = element_text(size = 18, face = "bold"),
+        legend.title = element_text(size = 14),
+        legend.position = "top")
+```
+
 
 # Hallucinations
 
@@ -566,7 +690,8 @@ reviews |>
   theme_minimal() +
   theme(legend.position = "right")
 ```
-```{r}
+
+```{r hallucinations_comments}
 reviews |> 
   fix_labels() |> 
   select(prompt_type, specialty, name, hallucinationsComment) |> 
@@ -612,6 +737,53 @@ reviews |>
   summarise(n = n(),
             .groups = "drop") |>
   arrange(desc(n)) |>
-  htmlTable::htmlTable()
+  htmlTable::htmlTable(align = "llr",
+                       rnames = FALSE)
+```
+
+```{r}
+people <- tribble(
+  ~id, ~first_name, ~middle_name, ~last_name,
+  "clytbas6v00014mzwgjotozwr", "Admin", "", "User",
+  "clytbe5d002peyjw71gvj6shv", "Max", "", "Gordon",
+  "clz1ey0ub00a2hozvt5lmzyeq", "Julius", "", "Krüger",
+  "clz5yw2cc00m7hozvpveci0tp", "Cyrus", "David", "Broden",
+  "cm02f4a01002s2dneftyr50ad", "Amir", "H.", "Payberah",
+  "cm06n0mbi01iq2dne9mp89iqg", "Robert", "", "Dahlbäck",
+  "cm0mwg25y00q1c2jodxw9kry2", "Miguel", "", "Márquez Gómez",
+  "cm0qgq13400q4c2jof9g7a4et", "Tazio", "", "Maleitzke",
+  "cm0uscb21000sx863n34ynwci", "Giulio Edoardo", "", "Vigni",
+  "cm0w1cr5q000v5dp6f8h9vw1d", "Martin", "", "Magnéli",
+  "cm0w1dxwf00115dp6gvtljj0u", "Niklas", "Johan Gunnar", "Barle",
+  "cm0wxfd9v00655dp66gy3uk8b", "Arnar", "", "Bender",
+  "clzyniqi1002j2dners150kpc", "Aleksi", "", "Reito",
+  "cm0y74mn3000q5f600niyxobw", "Dana", "", "Khalil",
+  "cm0yy02jj000zl5mzk77r0091", "Isaac", "R.", "Romanus",
+  "cm17ju72k004a131zbteqrmzf", "Daniel", "", "Lim",
+  "cm1ae82rb007d131z3oib4iow", "Viktor", "", "Schmidt",
+  "cm1c3g2nx008b131zcfqaojcw", "Thomas", "", "Tamras",
+  "cm1dykp2u009q131z2j0eo80j", "Daniela", "", "Gordon"
+)
+
+raw_with_datasets |> 
+  map(\(x) map(x, \(chart) list(specialty = chart$specialty, 
+                                name = chart$name,
+                                language = chart$language,
+                                createdBy = chart$createdBy)) |> 
+        bind_rows()) |>
+  bind_rows() |> 
+  count(createdBy, specialty, language) |> 
+  left_join(people, by = c("createdBy" = "id")) |> 
+  filter(first_name != "Admin") |> 
+  mutate(name = if_else(is.na(middle_name) | middle_name == "", 
+                        paste(first_name, last_name),
+                        paste(first_name, middle_name, last_name)),
+         name = if_else(name == "Max Gordon",
+                        "Aleksi Reito",
+                        name)) |> 
+  select(name, specialty, language, n) |> 
+  htmlTable(caption = "Number of charts created by each user. Note that users that have submitted charts using word/excel are not included here.",
+            align = "lllr",
+            rnames = FALSE)
 ```
 
