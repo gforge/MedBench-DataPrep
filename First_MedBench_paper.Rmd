@@ -4,7 +4,7 @@ author: "Max Gordon"
 date: "2024-09-30"
 output: html_document
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r setup, include=FALSE}
@@ -17,16 +17,44 @@ library(glue)
 library(lme4)
 library(broom.mixed)
 library(kableExtra)
+library(boot)
+library(fmsb)
 
 use_condaenv("base")
 ```
 
-```{r, include=FALSE}
-py_config()
+```{python python-versions}
+import sacrebleu
+import rouge
+
+sacrebleu_version = sacrebleu.__version__
+rouge_version = rouge.__version__
 ```
 
+```{r version-output}
+versions <- list(R = paste(version$major, version$minor, sep="."),
+                 lme4 = packageVersion("lme4"),
+                 broom.mixed = packageVersion("broom.mixed"),
+                 boot = packageVersion("boot"),
+                 fmsb = packageVersion("fmsb"),
+                 ggplot2 = packageVersion("ggplot2"),
+                 python = py_config()$version_string |> str_replace("\\|.+", ""),
+                 sacrebleu = py$sacrebleu_version,
+                 rouge = py$rouge_version) |> 
+  map(as.character) |> 
+  map(str_trim)
+```
+
+# Statistics
+
+Statistical analyses were conducted using R version `r versions$R` and Python `r versions$python`. BLEU scores were computed using the sacrebleu package (version `r versions$sacrebleu`), and ROUGE-L scores were calculated with the rouge package (version `r versions$rouge`) in Python.
+
+Due to the hierarchical nature of the data we used linear mixed effects models. The mixed-effects models were fitted using the lme4 package (version `r versions$lme4`) and broom.mixed (version `r versions$broom.mixed`) in R. For the BLEU/ROUGE-L metrics we used specialty combined with case id as random effect, while for manual evaluation output we used reviewer id as the mixed effect variable. Model estimates, standard errors, and 95% confidence intervals were calculated for the fixed effects. Statistical significance was assessed at a threshold of p < 0.05.
+
+Bootstrap methods with 1,000 resamples were employed using the boot package (version `r versions$boot`) in R to calculate percentile-based 95% confidence intervals for mean scores. Basic statistical summaries derived from the bootstrapping were presented prior to the advanced analyses to provide an overview of the data distributions. Data visualization was performed using ggplot2 (version `r versions$ggplot2`) and fmsb (version `r versions$fmsb`) packages in R.
+
 ```{r helper-functions}
-output_mixed_model <- function(m, outcome, summary_fn = NULL) {
+output_mixed_model <- function(m, outcome, summary_fn = NULL, digits = 2) {
   # Get model results with confidence intervals
   model_summary <- broom.mixed::tidy(m, conf.int = TRUE)
   
@@ -43,19 +71,42 @@ output_mixed_model <- function(m, outcome, summary_fn = NULL) {
       "Estimate" = estimate,
       # "Std. Error" = std.error,
     ) |>
-    mutate(across(where(is.numeric), \(x) htmlTable::txtRound(x, 2)),
+    mutate(across(where(is.numeric), \(x) htmlTable::txtRound(x, digits = digits)),
            `95% CI` = glue::glue("{conf.low} to {conf.high}")) |> 
     select(-conf.low, -conf.high, -std.error) |>
-    kable("html", caption = glue::glue("Mixed Model Results with Confidence Intervals for outcome {outcome}")) |> 
+    structure(outcome = outcome,
+              class = c("mixed_table", "data.frame"))
+}
+
+print.mixed_table <- function(x, ...) {
+  caption <- glue::glue("Mixed Model Results with Confidence Intervals for outcome {outcome}",
+                        outcome = attr(x, "outcome"))
+  x |> 
+    kable("html", caption = caption, escape = FALSE) |>
     kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+}
+
+toString.mixed_table <- function(x, term_id, ...) {
+  row <- x |> filter(Term == term_id)
+  if (nrow(row) == 0) {
+    stop("Row not found: ", term_id,
+         " available rows: \n - ", 
+         paste(x$Term, collapse = "\n - "))
+  }
+  
+  if (nrow(row) > 1) {
+    stop("Multiple rows found: ", term_id)
+  }
+  
+  glue::glue("{row$Estimate} (95% CI {row$`95% CI`})")
 }
 
 fix_labels <- function(x) {
   mutate(x,
          generatedBy = case_when(startsWith(generatedBy, "$") ~ str_replace(generatedBy, "^\\$", ""),
                                  TRUE ~ generatedBy),
-         prompt_type = case_when(str_detect(generatedBy, "@basic") ~ "Simple",
-                                 str_detect(generatedBy, "@decompos") ~ "Decompose",
+         prompt_type = case_when(str_detect(generatedBy, "@basic") ~ "Singel",
+                                 str_detect(generatedBy, "@decompos") ~ "Multistep",
                                  startsWith(generatedBy, "Human") ~ "Human"),
          chart_language = case_when(str_detect(chart_language, "original") ~ "English",
                                     TRUE ~ chart_language)) |> 
@@ -73,9 +124,7 @@ fix_factors <- function(x) {
 }
 ```
 
-# Basics
-
-```{r}
+```{r prep_data}
 # Load the data
 raw <- read_file("data/output/allData.json") |> fromJSON(simplifyVector = FALSE)
 cases <- raw |> 
@@ -125,17 +174,14 @@ reviews <- cases |>
     bind_rows()
   }) |> 
   bind_rows()
+
+clean_reviews <- reviews |> 
+  fix_labels() |> 
+  select(-version, -ends_with("Comment"), -hallucinations) |> 
+  fix_factors()
 ```
 
-# Review ratings
-
-```{r}
-no_reviewers <- reviews |> count(reviewer) |> nrow()
-no_english_reviews <- reviews |> filter(chart_language == "original") |> count(reviewer) |> nrow()
-no_swedish_reviews <- reviews |> filter(chart_language == "Swedish") |> count(reviewer) |> nrow()
-
-library(boot)
-
+```{r base-stats}
 # Function to calculate mean and percentile-based CI
 calculate_mean_and_ci <- function(data, indices) {
   d <- data[indices]
@@ -155,85 +201,26 @@ bootstrap_ci <- function(data, R = 1000, conf_level = 0.95) {
     with(glue::glue("{mean} (95% CI {lower_ci} - {upper_ci})"))
 }
 
-score <- list(overall = reviews,
+base_stats <- list(cases = raw |> length(),
+                   cases_with_summaries = summaries |> distinct(name, specialty, chart_language) |> nrow(),
+                   unique_cases_with_summaries = summaries |> distinct(name, specialty) |> nrow(),
+                   reviewers = reviews |> count(reviewer) |> nrow(),
+                   english_reviews = reviews |> filter(chart_language == "original") |> count(reviewer) |> nrow(),
+                   swedish_reviews = reviews |> filter(chart_language == "Swedish") |> count(reviewer) |> nrow()) |> 
+  set_names(\(x) paste0("no_", x)) |> 
+  append(list(overall = reviews,
               overall_english = reviews |> filter(chart_language == "original"),
               overall_swedish = reviews |> filter(chart_language == "Swedish")) |> 
-  map(\(x) x |> pull(overall) |> bootstrap_ci())
+           map(\(x) x |> pull(overall) |> bootstrap_ci()) |> 
+           set_names(\(x) paste0("score_", x)))
 ```
 
-We have `r nrow(reviews)` ratings from `r no_reviewers` reviewers. For English charts we have a total of `r no_english_reviews` reviewers, while for Swedish charts we have `r no_swedish_reviews` reviewers The overall rating is `r score$overall`, while the average rating for English charts is `r score$overall_english` and for Swedish charts `r score$overall_swedish`.
+# Results
 
-```{r prepped_data}
-clean_reviews <- reviews |> 
-  fix_labels() |> 
-  select(-version, -ends_with("Comment"), -hallucinations) |> 
-  fix_factors()
+For the `r base_stats$no_cases` cases, we have reviewed summaries for `r base_stats$no_cases_with_summaries` cases (`r base_stats$no_unique_cases_with_summaries` unique cases). The cases were reviewed by `r base_stats$no_reviewers` reviewers, amounting to a total of `r nrow(reviews)` ratings. For English charts we have a total of `r base_stats$no_english_reviews` reviewers, while for Swedish charts we have `r base_stats$no_swedish_reviews` reviewers The overall rating is `r base_stats$score_overall`, while the average rating for English charts is `r base_stats$score_overall_english` and for Swedish charts `r base_stats$score_overall_swedish`.
 
-prepped_data <- clean_reviews |> 
-  pivot_longer(cols = where(is.integer), names_to = "metric", values_to = "value") |>
-  group_by(chart_language, prompt_type, metric) |>
-  summarise(value = mean(value, na.rm =TRUE), .groups = "drop") |> 
-  mutate(metric = case_when(metric == "hospitalCourse" ~ "Hospital course",
-                            metric == "medicalHistory" ~ "Medical history",
-                            metric == "followUp" ~ "Follow-up",
-                            TRUE ~ Hmisc::capitalize(metric))) |> 
-  pivot_wider(names_from = metric, values_from = value)
 
-```
-
-# Overall
-
-For the overall rating none of the unusable were generated by hand and the majority of them were regarder as at least average or above. When modelling the score as a continuous variable using mixed regression we could see that the LLM estimates were on average ½ point lower than the human ones and this was even more pronounced for the Swedish summaries.
-
-```{r}
-colors <- c("Human" = "#ff70a6", "Decompose" = "#ff9770", "Simple" = "#ffd670")
-clean_reviews |> 
-  select(chart_language, prompt_type, overall) |> 
-  mutate(overall = factor(overall, 
-                          labels = c("Unusable",
-                                     "Subhuman",
-                                     "Average",
-                                     "Good",
-                                     "Superhuman"))) |>
-  ggplot(aes(x = overall, fill = prompt_type)) +
-  facet_wrap(~chart_language, ncol = 1) +
-  geom_bar(position = "dodge", alpha = 0.8, col = "black") +
-  labs(x = "Chart Language",
-       y = "Overall Rating") +
-  theme_minimal() +
-  theme(legend.position = "right",
-        strip.text = element_text(size = 12)) +
-  scale_fill_manual(values = colors,
-                    name = "Prompt Type")
-```
-
-```{r}
-reviews |> 
-  fix_labels() |> 
-  fix_factors() |> 
-  select(name, specialty, generator, language = chart_language, reviewer, overall) |> 
-  mutate(case_id = interaction(reviewer, name)) |> 
-  lmer(overall ~ specialty + language * generator + (1 | reviewer), data = _) |> 
-  output_mixed_model(outcome = "overall score",
-                     summary_fn = \(x) mutate(x,
-                                              term = case_when(
-                                                term == "(Intercept)" ~ "(Intercept) [Reference: Orthopaedics, English, Human]",
-                                                term == "specialtyOrthopaedics" ~ "Orthopaedics [vs. Medicine]",
-                                                term == "specialtyMedicine" ~ "Medicine [vs. Orthopaedics]",
-                                                term == "languageSwedish" ~ "Swedish [vs. English]",
-                                                term == "prompt_typeSimple" ~ "Simple [vs. Human]",
-                                                term == "prompt_typeDecompose" ~ "Decompose [vs. Human]",
-                                                term == "generatorLLM" ~ "LLM [vs. Human]",
-                                                term == "languageSwedish:generatorLLM" ~ "Swedish:LLM [vs. English:Human]",
-                                                TRUE ~ term
-                                              )))
-```
-
-## Metrics
-
-For the metrics BLEU and ROUGE-L we found that the Swedish summaries dropped in quality compared to the English ones. The mixed effect regression showed that this effect was only significant for the language variable, the generated summaries did not vary in BLEU or ROUGE-L compared to the human ones if the summary was for an orthopedic or internal medicine case nor if we had used a simple approach or decomposed the summary.
-
-```{python, echo=FALSE}
+```{python python-metrics, echo=FALSE}
 from dataclasses import dataclass, asdict
 import pandas as pd
 from rouge import Rouge
@@ -333,12 +320,95 @@ def retrieve_summary_text_scores(df: pd.DataFrame) -> pd.DataFrame:
 results_df = retrieve_summary_text_scores(df)
 ```
 
-
-```{r}
+```{r metrics-regression}
 df <- py$results_df |> 
   fix_labels() |> 
   rename(language = chart_language)
 
+# Data preparation using the built-in pipe and across
+regression_df <- df |>
+  mutate(across(c(specialty, language, prompt_type), as.factor),
+         case_id = interaction(specialty, name))  # Create unique case_id for each specialty + name
+
+# Fit a mixed model for rouge_l_f with random intercept for case_id
+metrics_regression_outputs <- local({
+  fn <- \(x) mutate(x,
+                    term = case_when(
+                      term == "(Intercept)" ~ "(Intercept) [Reference: Medicine, English, Multistep]",
+                      term == "specialtyOrthopaedics" ~ "Orthopaedics [vs. Medicine]",
+                      term == "languageSwedish" ~ "Swedish [vs. English]",
+                      term == "prompt_typeSingel" ~ "Singel [vs. Multistep]",
+                      TRUE ~ term
+                    ))
+  list(
+    rouge = lmer(rouge_l_f ~ specialty + language + prompt_type + (1 | case_id), data = regression_df) |> 
+      output_mixed_model("ROUGE-L F1",
+                         summary_fn = fn,
+                         digits = 2),
+    bleu = lmer(bleu_score ~ specialty + language + prompt_type + (1 | case_id), data = regression_df) |> 
+      output_mixed_model("BLEU",
+                         summary_fn = fn,
+                         digits = 1))
+})
+```
+
+
+```{r overall_output_regression}
+overall_output <- reviews |> 
+  fix_labels() |> 
+  fix_factors() |> 
+  select(name, specialty, generator, language = chart_language, reviewer, overall) |> 
+  mutate(case_id = interaction(reviewer, name)) |> 
+  lmer(overall ~ specialty + language * generator + (1 | reviewer), data = _) |> 
+  output_mixed_model(outcome = "overall score",
+                     summary_fn = \(x) mutate(x,
+                                              term = case_when(
+                                                term == "(Intercept)" ~ "(Intercept) [Reference: Orthopaedics, English, Human]",
+                                                term == "specialtyOrthopaedics" ~ "Orthopaedics [vs. Medicine]",
+                                                term == "specialtyMedicine" ~ "Medicine [vs. Orthopaedics]",
+                                                term == "languageSwedish" ~ "Swedish [vs. English]",
+                                                term == "prompt_typeSingel" ~ "Singel [vs. Human]",
+                                                term == "prompt_typeMultistep" ~ "Multistep [vs. Human]",
+                                                term == "generatorLLM" ~ "LLM [vs. Human]",
+                                                term == "languageSwedish:generatorLLM" ~ "Interaction: Swedish & LLM",
+                                                TRUE ~ term
+                                              )))
+```
+
+For the overall rating of the summaries, none of the summaries deemed unusable were generated by humans and the majority of them were regarded as at least average or above. When modelling the score as a continuous variable using mixed regression we found that the LLM estimates were on average lower than the human ones, `r toString(overall_output, "LLM [vs. Human]")` and this was even more pronounced for the Swedish summaries, `r toString(overall_output, "Interaction: Swedish & LLM")`. Similarly the BLEU and ROUGE-L metrics dropped when comparing the LLM to the human summaries, `r toString(metrics_regression_outputs$bleu, "Swedish [vs. English]")` and `r toString(metrics_regression_outputs$rouge, "Swedish [vs. English]")` respectively.
+
+```{r}
+colors <- c("Human" = "#7fbf7b", "Multistep" = "#af8dc3", "Singel" = "#e7d4e8")
+clean_reviews |> 
+  select(chart_language, prompt_type, overall) |> 
+  mutate(overall = factor(overall, 
+                          labels = c("Unusable",
+                                     "Subhuman",
+                                     "Average",
+                                     "Good",
+                                     "Superhuman"))) |>
+  ggplot(aes(x = overall, fill = prompt_type)) +
+  facet_wrap(~chart_language, ncol = 1) +
+  geom_bar(position = "dodge", alpha = 0.8, col = "black") +
+  labs(x = "Chart Language",
+       y = "Overall Rating") +
+  theme_minimal() +
+  theme(legend.position = "right",
+        strip.text = element_text(size = 12)) +
+  scale_fill_manual(values = colors,
+                    name = "Prompt Type")
+```
+
+```{r overall_mixed_model_output}
+print(overall_output)
+```
+
+```{r metrics_mixed_model_output}
+print(metrics_regression_outputs$rouge)
+print(metrics_regression_outputs$bleu)
+```
+
+```{r}
 df |> 
   group_by(language, prompt_type) |>
   summarise(across(starts_with("rouge") | starts_with("bleu"), mean),
@@ -356,40 +426,19 @@ df |>
                 caption = "ROUGE-L F1 and BLEU scores for generated summaries per language and type")
 ```
 
+For the specific domains we found that follow-up in general was worse for the LLM-generated models. Both human and LLM generated poorly in regards to medications, although for the human notes this was frequently not present due to it not being a part of a standard orthopedic discharge note. In general, most LLM summaries performed worse in Swedish and followed the same pattern as indicated by the overall score.
+
 ```{r}
-# Data preparation using the built-in pipe and across
-df <- df |>
-  mutate(across(c(specialty, language, prompt_type), as.factor),
-         case_id = interaction(specialty, name))  # Create unique case_id for each specialty + name
-
-# Fit a mixed model for rouge_l_f with random intercept for case_id
-lmer(rouge_l_f ~ specialty + language + prompt_type + (1 | case_id), data = df) |> 
-  output_mixed_model("ROUGE-L F1",
-                     summary_fn = \(x) mutate(x,
-                                              term = case_when(
-                                                term == "(Intercept)" ~ "(Intercept) [Reference: Medicine, English, Decompose]",
-                                                term == "specialtyOrthopaedics" ~ "Orthopaedics [vs. Medicine]",
-                                                term == "languageSwedish" ~ "Swedish [vs. English]",
-                                                term == "prompt_typeSimple" ~ "Simple [vs. Decompose]",
-                                                TRUE ~ term
-                                              )))
-
-# Fit a mixed model for bleu_score with random intercept for case_id
-lmer(bleu_score ~ specialty + language + prompt_type + (1 | case_id), data = df) |> 
-  output_mixed_model("BLEU",
-                     summary_fn = \(x) mutate(x,
-                                              term = case_when(
-                                                term == "(Intercept)" ~ "(Intercept) [Reference: Medicine, English, Decompose]",
-                                                term == "specialtyOrthopaedics" ~ "Orthopaedics [vs. Medicine]",
-                                                term == "languageSwedish" ~ "Swedish [vs. English]",
-                                                term == "prompt_typeSimple" ~ "Simple [vs. Decompose]",
-                                                TRUE ~ term
-                                              )))
+prepped_data <- clean_reviews |> 
+  pivot_longer(cols = where(is.integer), names_to = "metric", values_to = "value") |>
+  group_by(chart_language, prompt_type, metric) |>
+  summarise(value = mean(value, na.rm =TRUE), .groups = "drop") |> 
+  mutate(metric = case_when(metric == "hospitalCourse" ~ "Hospital course",
+                            metric == "medicalHistory" ~ "Medical history",
+                            metric == "followUp" ~ "Follow-up",
+                            TRUE ~ Hmisc::capitalize(metric))) |> 
+  pivot_wider(names_from = metric, values_from = value)
 ```
-
-# Subelements
-
-Similar patterns were seen when looking into the specific dimensions where follow-up was worse throughout and the Swedish cases had a worse performance for the majority of the outcomes.
 
 ```{r radar_data}
 max_min <- prepped_data |> 
@@ -552,5 +601,17 @@ reviews |>
                 rnames_unique = rnames_unique,
                 align = "l")
 
+```
+
+# Author contributions
+
+```{r}
+reviews |> 
+  fix_labels() |> 
+  group_by(reviewer) |>
+  summarise(n = n(),
+            .groups = "drop") |>
+  arrange(desc(n)) |>
+  htmlTable::htmlTable()
 ```
 
