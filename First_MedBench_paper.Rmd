@@ -281,7 +281,7 @@ raw_with_datasets |>
   bind_rows() |> 
   group_by(specialty) |> 
   summarise(`header_Cases` = name |> unique() |> length() |> as.character(),
-            header_Languages = language |> unique(),
+            header_Languages = language |> unique() |> paste(collapse = ", "),
             `header_Length of stay` = get_median_min_max(length_of_stay),
             `header_No. of notes` = get_median_min_max(no_notes),
             `header_No. of medications` = get_median_min_max(no_medications),
@@ -451,7 +451,7 @@ overall_output <- reviews |>
   fix_factors() |> 
   select(name, specialty, generator, language = chart_language, reviewer, overall) |> 
   mutate(case_id = interaction(reviewer, name)) |> 
-  lmer(overall ~ specialty + language * generator + (1 | reviewer), data = _) |> 
+  lmer(overall ~ (specialty + language) * generator + (1 | reviewer), data = _) |> 
   output_mixed_model(outcome = "overall score",
                      summary_fn = \(x) mutate(x,
                                               term = case_when(
@@ -462,6 +462,7 @@ overall_output <- reviews |>
                                                 term == "prompt_typeSingel" ~ "Singel [vs. Human]",
                                                 term == "prompt_typeMultistep" ~ "Multistep [vs. Human]",
                                                 term == "generatorLLM" ~ "LLM [vs. Human]",
+                                                term == "specialtyMedicine:generatorLLM" ~ "Interaction: Medicine & LLM",
                                                 term == "languageSwedish:generatorLLM" ~ "Interaction: Swedish & LLM",
                                                 TRUE ~ term
                                               )))
