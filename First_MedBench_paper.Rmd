@@ -47,14 +47,6 @@ versions <- list(R = paste(version$major, version$minor, sep="."),
   map(str_trim)
 ```
 
-# Statistics
-
-Statistical analyses were conducted using R version `r versions$R` and Python `r versions$python`. BLEU scores were computed using the sacrebleu package (version `r versions$sacrebleu`), and ROUGE-L scores were calculated with the rouge package (version `r versions$rouge`) in Python.
-
-Due to the hierarchical nature of the data we used linear mixed effects models. The mixed-effects models were fitted using the lme4 package (version `r versions$lme4`) and broom.mixed (version `r versions$broom.mixed`) in R. For the BLEU/ROUGE-L metrics we used specialty combined with case id as random effect, while for manual evaluation output we used reviewer id as the mixed effect variable. Model estimates, standard errors, and 95% confidence intervals were calculated for the fixed effects. Statistical significance was assessed at a threshold of p < 0.05.
-
-Bootstrap methods with 1,000 resamples were employed using the boot package (version `r versions$boot`) in R to calculate percentile-based 95% confidence intervals for mean scores. Basic statistical summaries derived from the bootstrapping were presented prior to the advanced analyses to provide an overview of the data distributions. Data visualization was performed using ggplot2 (version `r versions$ggplot2`) and ggpubr (version `r versions$ggpubr`) in R.
-
 ```{r helper-functions}
 output_mixed_model <- function(m, outcome, summary_fn = NULL, digits = 2) {
   # Get model results with confidence intervals
@@ -101,7 +93,6 @@ toString.mixed_table <- function(x, term_id, invert = FALSE, unit = NULL, ...) {
   }
   
   estimate <- row$Estimate
-  interval <- row$`95% CI` |> str_split(" to ") |> unlist()
   if (invert) {
     str_inverter <- function(x) {
       x <- str_trim(x)
@@ -112,11 +103,12 @@ toString.mixed_table <- function(x, term_id, invert = FALSE, unit = NULL, ...) {
       }
     }
     estimate <- str_inverter(estimate)
-    interval <- interval |> map(str_inverter)
   }
   
-  unit_txt <- ifelse(is.null(unit), "", glue::glue(" {unit}"))
-  glue::glue("{estimate}{unit_txt} (95% CI {interval[1]} to {interval[2]})")
+  glue::glue("{estimate}{unit_txt} (95% CI {interval})",
+             unit_txt = ifelse(is.null(unit), "", glue::glue(" {unit}")),
+             estimate = estimate,
+             interval = row$`95% CI`)
 }
 
 fix_labels <- function(x) {
@@ -243,9 +235,9 @@ bootstrap_ci <- function(data, R = 1000, conf_level = 0.95) {
     with(glue::glue("{mean} (95% CI {lower_ci} - {upper_ci})"))
 }
 
-base_stats <- list(cases = raw_with_datasets |> length(),
-                   cases_with_summaries = summaries |> distinct(name, specialty, chart_language) |> nrow(),
-                   unique_cases_with_summaries = summaries |> distinct(name, specialty) |> nrow(),
+base_stats <- list(total = clean_reviews |> distinct(name, specialty) |> nrow(),
+                   orthopaedics = clean_reviews |> filter(specialty == "Orthopaedics") |> distinct(name, specialty) |> nrow(),
+                   medicine = clean_reviews |> filter(specialty == "Medicine") |> distinct(name, specialty) |> nrow(),
                    reviewers = reviews |> count(reviewer) |> nrow(),
                    english_reviews = reviews |> filter(chart_language == "original") |> count(reviewer) |> nrow(),
                    swedish_reviews = reviews |> filter(chart_language == "Swedish") |> count(reviewer) |> nrow()) |> 
@@ -257,11 +249,7 @@ base_stats <- list(cases = raw_with_datasets |> length(),
            set_names(\(x) paste0("score_", x)))
 ```
 
-# Results
-
-For the `r base_stats$no_cases` cases (see Table 2 for dataset description), we have reviewed summaries for `r base_stats$no_cases_with_summaries` cases (`r base_stats$no_unique_cases_with_summaries` unique cases). The cases were reviewed by `r base_stats$no_reviewers` reviewers, amounting to a total of `r nrow(reviews)` ratings. For English charts we have a total of `r base_stats$no_english_reviews` reviewers, while for Swedish charts we have `r base_stats$no_swedish_reviews` reviewers The overall rating is `r base_stats$score_overall`, while the average rating for English charts is `r base_stats$score_overall_english` and for Swedish charts `r base_stats$score_overall_swedish`.
-
-```{r Table 2 - language counts}
+```{r Table 1 - full dataset description}
 get_median_min_max <- function(x) {
   glue::glue("{median} ({min}&#8209;{max})",
              median = median(x),
@@ -325,8 +313,42 @@ raw_with_datasets |>
                 # Vertical align to top
                 css.cell = "vertical-align: top;")
 ```
-**Table 2: Description of the dataset. The table shows the number of cases, the languages used in the cases, the length of stay, the number of notes, medications, and lab values. The values are presented as the median and range.**
+**Table 1: Description of the dataset. The table shows the number of cases, the languages used in the cases, the length of stay, the number of notes, medications, and lab values. The values are presented as the median and range.**
 
+# Statistics
+
+Statistical analyses were conducted using R version `r versions$R` and Python `r versions$python`. BLEU scores were computed using the sacrebleu package (version `r versions$sacrebleu`), and ROUGE-L scores were calculated with the rouge package (version `r versions$rouge`) in Python.
+
+Due to the hierarchical nature of the data we used linear mixed effects models. The mixed-effects models were fitted using the lme4 package (version `r versions$lme4`) and broom.mixed (version `r versions$broom.mixed`) in R.
+
+For the manual evaluation outcomes (overall score and domain-specific ratings), the fixed effects in our models included:
+
+- Specialty: orthopedics or internal medicine.
+- Language: English or Swedish.
+- Generator type: human-written or LLM-generated summaries.
+- Interaction terms: between specialty, language, and generator type to assess whether the effect of the generator differed by specialty and language.
+
+We included reviewer identity as a random effect to account for variability among reviewers since each reviewer evaluated multiple summaries (ranging from `r reviews |> count(reviewer) |> pull(n) |> range() |> paste(collapse = " to ")` summaries).
+
+For the automatic evaluation metrics (BLEU and ROUGE-L scores), the fixed effects in our models were:
+
+- Specialty: orthopedics or internal medicine.
+- Language: English or Swedish.
+- Prompt type: single or multistep prompt.
+
+We included case identity as a random effect to account for variability within cases. Since each case has an English standard text that is translated into multiple languages, including case identity as a random effect helps control for potential similarities within a case.
+
+Model estimates, standard errors, and 95% confidence intervals were calculated for the fixed effects. Statistical significance was assessed at a threshold of p < 0.05.
+
+Bootstrap methods with 1,000 resamples were employed using the boot package (version `r versions$boot`) in R to calculate percentile-based 95% confidence intervals for mean scores. Basic statistical summaries derived from the bootstrapping were presented prior to the advanced analyses to provide an overview of the data distributions. Data visualization was performed using ggplot2 (version `r versions$ggplot2`) and ggpubr (version `r versions$ggpubr`) in R.
+
+No formal model diagnostics were performed for the mixed-effects models. Given that the outcome variables were ratings on a 1–5 scale, we considered linear mixed-effects regression appropriate for this exploratory analysis.
+
+# Results
+
+We evaluated a total of `r base_stats$no_total` unique cases, comprising `r base_stats$no_orthopaedic` orthopedic cases and `r base_stats$no_medicine` internal medicine cases. The orthopedic cases were further evaluated in both English and Swedish, resulting in 15 case-language combinations for which summaries were generated and reviewed. 
+
+The summaries were assessed by `r base_stats$no_reviewers` medical professionals, resulting in a total of `r nrow(reviews)` ratings. For English summaries, `r base_stats$no_english_reviews` eviewers provided evaluations, while `r base_stats$no_swedish_reviews` reviewers assessed the Swedish summaries. The overall mean rating across all summaries was `r base_stats$score_overall`. The average rating for English summaries was `r base_stats$score_overall_english`, whereas Swedish summaries received an average rating of `r base_stats$score_overall_swedish`.
 
 ```{python python-metrics, echo=FALSE}
 from dataclasses import dataclass, asdict
@@ -460,13 +482,31 @@ metrics_regression_outputs <- local({
 })
 ```
 
-
 ```{r overall_output_regression}
+simple_overall <- reviews |> 
+  fix_labels() |> 
+  fix_factors() |> 
+  select(name, specialty, prompt_type, language = chart_language, reviewer, overall) |> 
+  lmer(overall ~ specialty + language + prompt_type + (1 | reviewer), data = _) |> 
+  output_mixed_model(outcome = "overall score",
+                     summary_fn = \(x) mutate(x,
+                                              term = case_when(
+                                                term == "(Intercept)" ~ "(Intercept) [Reference: Orthopaedics, English, Human]",
+                                                term == "specialtyOrthopaedics" ~ "Orthopaedics [vs. Medicine]",
+                                                term == "specialtyMedicine" ~ "Medicine [vs. Orthopaedics]",
+                                                term == "languageSwedish" ~ "Swedish [vs. English]",
+                                                term == "prompt_typeSingel" ~ "Singel [vs. Human]",
+                                                term == "prompt_typeMultistep" ~ "Multistep [vs. Human]",
+                                                term == "generatorLLM" ~ "LLM [vs. Human]",
+                                                term == "specialtyMedicine:generatorLLM" ~ "Interaction: Medicine & LLM",
+                                                term == "languageSwedish:generatorLLM" ~ "Interaction: Swedish & LLM",
+                                                TRUE ~ term
+                                              )))
+
 overall_output <- reviews |> 
   fix_labels() |> 
   fix_factors() |> 
   select(name, specialty, generator, language = chart_language, reviewer, overall) |> 
-  mutate(case_id = interaction(reviewer, name)) |> 
   lmer(overall ~ (specialty + language) * generator + (1 | reviewer), data = _) |> 
   output_mixed_model(outcome = "overall score",
                      summary_fn = \(x) mutate(x,
@@ -484,7 +524,17 @@ overall_output <- reviews |>
                                               )))
 ```
 
-For the overall rating of the summaries, none of the summaries deemed unusable were generated by humans and the majority of them were regarded as at least average or above (Figure 1). When modelling the score as a continuous variable using mixed regression we found that the LLM estimates were on average lower than the human ones, `r toString(overall_output, "LLM [vs. Human]")` and this was even more pronounced for the Swedish summaries, with an additional reduction of `r toString(overall_output, "Interaction: Swedish & LLM")`. The score also dropped for the medical LLM cases where we it drop by `r toString(overall_output, "Interaction: Medicine & LLM", unit = "points")` on top of the general LLM drop. Similarly the BLEU and ROUGE-L metrics dropped when comparing the LLM to the human summaries, `r toString(metrics_regression_outputs$bleu, "Swedish [vs. English]")` and `r toString(metrics_regression_outputs$rouge, "Swedish [vs. English]")` respectively, see Table 3.
+## Overall performance
+
+For the overall rating of the summaries, the majority of those deemed unusable were generated by the LLM, while most human-written summaries were regarded as average or above (Figure 1). Using linear mixed-effects regression to model the overall scores, we found that LLM-generated summaries scored significantly lower than human-written summaries by an average of `r toString(overall_output, "LLM [vs. Human]", invert = TRUE, unit = "points")`, see Table 3. 
+
+An interaction effect revealed that LLM-generated summaries in Swedish had an additional decrease of `r toString(overall_output, "Interaction: Swedish & LLM", invert = TRUE, unit = "points")` compared to English summaries. Similarly, LLM-generated summaries for internal medicine cases showed a further decrease of `r toString(overall_output, "Interaction: Medicine & LLM", unit = "points", invert = TRUE)`, although this did not reach statistical significance.
+
+When comparing prompt strategies in a simplified mixed-effects model without interactions, we found that the multistep prompt performed worse than the single-step approach, with a decrease of `r toString(simple_overall, "Multistep [vs. Human]", unit = "points")` versus a decrease of `r toString(simple_overall, "Singel [vs. Human]", unit = "points")` for the single prompt.
+
+## Automatic evaluation metrics
+
+In addition to manual evaluations, we assessed the generated summaries using automatic evaluation metrics (Table 3), specifically BLEU and ROUGE-L scores, to quantify the similarity between the LLM-generated summaries and the reference human-written summaries. The mixed-effects regression analysis for the ROUGE-L F1 score revealed that LLM-generated summaries in Swedish had significantly lower scores compared to those in English, with a decrease of `r toString(metrics_regression_outputs$rouge, "Swedish [vs. English]", invert = TRUE)`. Similarly, for the BLEU score, LLM-generated summaries in Swedish scored significantly lower than their English counterparts, with a reduction of `r toString(metrics_regression_outputs$bleu, "Swedish [vs. English]", invert = TRUE)`.
 
 ```{r overall_grap, fig.cap="Figure 1: Overall rating of the summaries by chart language and prompt type."}
 colors <- c("Human" = "#7fbf7b", "Multistep" = "#af8dc3", "Singel" = "#e7d4e8")
@@ -512,12 +562,12 @@ clean_reviews |>
 print(overall_output)
 ```
 
-```{r metrics_mixed_model_output}
+```{r metrics_mixed_model_output, include=FALSE}
 print(metrics_regression_outputs$rouge)
 print(metrics_regression_outputs$bleu)
 ```
 
-```{r}
+```{r basic-rouge table}
 df |> 
   group_by(language, prompt_type) |>
   summarise(across(starts_with("rouge") | starts_with("bleu"), mean),
@@ -535,7 +585,7 @@ df |>
                 caption = "ROUGE-L F1 and BLEU scores for generated summaries per language and type")
 ```
 
-For the specific domains we found that follow-up in general was worse for the LLM-generated models. Both human and LLM generated poorly in regards to medications, although for the human notes this was frequently not present due to it not being a part of a standard orthopedic discharge note. In general, most LLM summaries performed worse in Swedish and followed the same pattern as indicated by the overall score (Figure 2). Regarding hallucinations these were more prevalent in the LLM generated summaries, often appearing in the follow-up plan with follow-up recommendations not present in the provided health record or the prompt instructions. Regarding hallucinations these were more prevalent in the LLM generated summaries, often appearing in the follow-up plan with follow-up recommendations not present in the provided health record or the prompt instructions (Figure 3).
+Analysis of specific domains within the summaries revealed that LLM-generated summaries generally performed worse in the follow-up sections compared to human-written summaries (Figure 2). This was particularly evident in the Swedish summaries. In the medications domain, both human and LLM-generated summaries scored lower. For human-written orthopedic discharge summaries, medication information was often omitted, as it is not always standard practice to include detailed medication lists in these documents.
 
 ```{r}
 prepped_data <- clean_reviews |> 
@@ -687,10 +737,12 @@ prepped_data |>
 
 # Hallucinations
 
+Hallucinations, defined as instances where the LLM introduced information not present in the source material, were more prevalent in the LLM-generated summaries (Figure 3). These hallucinations frequently appeared in the follow-up plans, where the LLM added recommendations or instructions not included in the original patient records or prompt instructions. For example, the LLM might include advice such as, "In case of suspected complications, the patient should contact the emergency department or the orthopedic outpatient clinic," which was neither part of the provided information nor the prompt instructions. This issue was observed in both orthopedic and internal medicine cases.
+
 ```{r}
 reviews |> 
   fix_labels() |> 
-  select(prompt_type, hallucinations) |> 
+  select(prompt_type, hallucinations, chart_language) |> 
   mutate(hallucinations = factor(hallucinations,
                                  levels = 0:3,
                                  labels = c("None", 
@@ -698,6 +750,7 @@ reviews |>
                                             "3 to 4",
                                             "More than 4"))) |> 
   ggplot(aes(x = hallucinations, fill = prompt_type)) +
+  facet_grid(~chart_language) +
   geom_bar(position = "dodge", color = "black", alpha = 0.8) +
   scale_fill_manual(values = colors,
                     name = "Prompt Type") +
