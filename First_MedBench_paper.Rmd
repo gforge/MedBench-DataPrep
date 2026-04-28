@@ -2,7 +2,13 @@
 title: "First MedBench paper"
 author: "Max Gordon"
 date: "2024-09-30"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    dev: pdf
+    self_contained: false
 editor_options: 
   chunk_output_type: console
 ---
@@ -287,10 +293,7 @@ raw_with_datasets |>
                sort_order = case_when(language == "English" ~ "1",
                                       TRUE ~ language)) |> 
         arrange(sort_order) |> 
-        mutate(language = paste(language, collapse = ", ")) |> 
-        select(-sort_order) |>
-        # The languages don't always match in no. of 
-        slice_head(n = 1)) |>
+        select(-sort_order)) |>
   bind_rows() |> 
   group_by(specialty) |> 
   summarise(`header_Cases` = name |> unique() |> length() |> as.character(),
@@ -751,7 +754,7 @@ Hallucinations, defined as instances where the LLM introduced information not pr
 
 Additionally we found an error in the multistep prompt that instructed the model to include "In case of suspected complications, the patient should contact the emergency department or the orthopedic outpatient clinic". Interestingly the LLM included this instruction not only for the orthopedic, but also for the internal medicine cases despite that it makes no sense in that context.
 
-```{r}
+```{r hallucinations, fig.cap="Hallucinations in generated summaries."}
 reviews |> 
   fix_labels() |> 
   select(prompt_type, hallucinations, chart_language) |> 
