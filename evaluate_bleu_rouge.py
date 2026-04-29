@@ -81,7 +81,9 @@ def compute_bleu(hypothesis: str, references: list[str]) -> float:
     return result.score
 
 
-def collect_llm_summaries(llm_dir: Path, specialty_filter: str | None, model_filter: str | None) -> list[dict]:
+def collect_llm_summaries(
+    llm_dir: Path, specialty_filter: str | None, model_filter: str | None
+) -> list[dict]:
     records = []
     for specialty_dir in sorted(llm_dir.iterdir()):
         if not specialty_dir.is_dir():
@@ -97,23 +99,41 @@ def collect_llm_summaries(llm_dir: Path, specialty_filter: str | None, model_fil
             if model_filter and model_filter not in generated_by:
                 continue
             text = txt_file.read_text(encoding="utf-8").strip()
-            records.append({
-                "specialty": specialty,
-                "case_id": case_id,
-                "language": language,
-                "generated_by": generated_by,
-                "text": text,
-            })
+            records.append(
+                {
+                    "specialty": specialty,
+                    "case_id": case_id,
+                    "language": language,
+                    "generated_by": generated_by,
+                    "text": text,
+                }
+            )
     return records
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Compute BLEU/ROUGE scores for LLM summaries")
-    parser.add_argument("--llm-dir", default="../LLM/data/output", help="Directory with LLM output subdirs per specialty")
-    parser.add_argument("--alldata", default="data/output/allData.json", help="allData.json from the Platform")
+    parser = argparse.ArgumentParser(
+        description="Compute BLEU/ROUGE scores for LLM summaries"
+    )
+    parser.add_argument(
+        "--llm-dir",
+        default="../LLM/data/output",
+        help="Directory with LLM output subdirs per specialty",
+    )
+    parser.add_argument(
+        "--alldata",
+        default="data/output/allData.json",
+        help="allData.json from the Platform",
+    )
     parser.add_argument("--out", default="results/bleu_rouge.csv")
-    parser.add_argument("--specialty", default=None, help="Filter to a single specialty")
-    parser.add_argument("--model", default=None, help="Filter by model string (substring match on generatedBy)")
+    parser.add_argument(
+        "--specialty", default=None, help="Filter to a single specialty"
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Filter by model string (substring match on generatedBy)",
+    )
     args = parser.parse_args()
 
     alldata_path = Path(args.alldata)
@@ -145,16 +165,18 @@ def main() -> None:
 
         bleu = compute_bleu(rec["text"], refs)
         rouge = compute_rouge(rec["text"], refs)
-        results.append({
-            "specialty": rec["specialty"],
-            "case_id": rec["case_id"],
-            "language": rec["language"],
-            "generated_by": rec["generated_by"],
-            "bleu": round(bleu, 4),
-            "rouge1_f": round(rouge["rouge1_f"], 4),
-            "rouge2_f": round(rouge["rouge2_f"], 4),
-            "rougeL_f": round(rouge["rougeL_f"], 4),
-        })
+        results.append(
+            {
+                "specialty": rec["specialty"],
+                "case_id": rec["case_id"],
+                "language": rec["language"],
+                "generated_by": rec["generated_by"],
+                "bleu": round(bleu, 4),
+                "rouge1_f": round(rouge["rouge1_f"], 4),
+                "rouge2_f": round(rouge["rouge2_f"], 4),
+                "rougeL_f": round(rouge["rougeL_f"], 4),
+            }
+        )
 
     if skipped:
         print(f"Skipped {skipped} LLM summaries with no matching human reference.")
@@ -163,7 +185,16 @@ def main() -> None:
         print("No results to write.")
         return
 
-    fieldnames = ["specialty", "case_id", "language", "generated_by", "bleu", "rouge1_f", "rouge2_f", "rougeL_f"]
+    fieldnames = [
+        "specialty",
+        "case_id",
+        "language",
+        "generated_by",
+        "bleu",
+        "rouge1_f",
+        "rouge2_f",
+        "rougeL_f",
+    ]
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()

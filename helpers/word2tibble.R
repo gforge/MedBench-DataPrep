@@ -16,15 +16,15 @@
 #'   - `content`: The content of the entry.
 #'   - `timestamp`: The timestamp of the entry, calculated from the year and hour.
 word2tibble <- function(fn) {
-  date_formats =  c(
+  date_formats <- c(
     Iso = "20[0-2]\\d-[0-1]\\d-[0-3]\\d", # E.g. 2021-12-31
     European = "[0-3]\\d[-/][0-1]{0,1}\\d[-/]20[0-2]\\d" # E.g. 31-12-2021 or 31/12/2021
   )
-  hour_formats = c(
+  hour_formats <- c(
     General = "[0-2]\\d[:.][0-6]\\d", # E.g. 23:59
     French = "[0-2]\\d[hH][0-6]\\d"
   )
-  dr_names = c(
+  dr_names <- c(
     general = "[Dd]r.{0,1} [^\n]+",
     Greek = "Δρ[^\n]+",
     Italian = "[Dd]ott[^\n]+"
@@ -36,27 +36,30 @@ word2tibble <- function(fn) {
     author = paste(dr_names, collapse = "|")
   )
 
-  regex_patterns$header <- glue("(?s)^(.+),[ ]+({date}),*[ ]+({hour}),[ ]+({author})",
-                                date = regex_patterns$date,
-                                hour = regex_patterns$hour,
-                                author = regex_patterns$author) |>
+  regex_patterns$header <- glue("(?s)^(.+?)(?:,[ ]+|[ ]+)({date}),*[ ]+({hour}),[ ]+({author})",
+    date = regex_patterns$date,
+    hour = regex_patterns$hour,
+    author = regex_patterns$author
+  ) |>
     as.character()
 
   convertToIsoDateString <- function(date) {
     if (length(date) > 1) {
-      return (map_chr(date, convertToIsoDateString))
+      return(map_chr(date, convertToIsoDateString))
     }
 
     # Remove leading and trailing white space
     date <- str_trim(date)
 
     if (str_detect(date, glue("^{date}$",
-                              date = date_formats["European"]))) {
+      date = date_formats["European"]
+    ))) {
       return(lubridate::dmy(date) |> as.character())
     }
 
     if (str_detect(date, glue("^{date}$",
-                              date = date_formats["Iso"]))) {
+      date = date_formats["Iso"]
+    ))) {
       return(date)
     }
 
@@ -65,18 +68,20 @@ word2tibble <- function(fn) {
 
   convertToHourString <- function(hour) {
     if (length(hour) > 1) {
-      return (map_chr(hour, convertToHourString))
+      return(map_chr(hour, convertToHourString))
     }
 
     hour <- str_trim(hour)
 
     if (str_detect(hour, glue("^{hour}$",
-                              hour = hour_formats["General"]))) {
+      hour = hour_formats["General"]
+    ))) {
       return(str_replace(hour, "[:.]", ":"))
     }
 
     if (str_detect(hour, glue("^{hour}$",
-                              hour = hour_formats["French"]))) {
+      hour = hour_formats["French"]
+    ))) {
       return(str_replace(hour, "[hH]", ":"))
     }
 
@@ -90,7 +95,7 @@ word2tibble <- function(fn) {
 
     if (endsWith(path, ".docx")) {
       summary <- suppressWarnings(officer::read_docx(path) |>
-                                    officer::docx_summary())
+        officer::docx_summary())
       return(summary$text)
     }
 
@@ -135,26 +140,32 @@ word2tibble <- function(fn) {
     filter(nchar(text) > 0)
 
   base_data <- raw_data |>
-    mutate(header = str_split(text, "\n") |> map_chr(\(x) x[[1]]),
-           type = str_replace(header, regex_patterns$header, "\\1"),
-           year = str_replace(header, regex_patterns$header, "\\2"),
-           hour = str_replace(header, regex_patterns$header, "\\3"),
-           author = str_replace(header, regex_patterns$header, "\\4"),
-           content = str_replace(text, "^(.+[^\n])\n+(.+)", "\\2")) |>
+    mutate(
+      header = str_split(text, "\n") |> map_chr(\(x) x[[1]]),
+      type = str_replace(header, regex_patterns$header, "\\1"),
+      year = str_replace(header, regex_patterns$header, "\\2"),
+      hour = str_replace(header, regex_patterns$header, "\\3"),
+      author = str_replace(header, regex_patterns$header, "\\4"),
+      content = str_replace(text, "^(.+[^\n])\n+(.+)", "\\2")
+    ) |>
     relocate(text, .after = -1)
 
-  clean_data <- base_data |>
-    mutate(year = convertToIsoDateString(year),
-           hour = convertToHourString(hour),
-           timestamp = lubridate::ymd_hm(paste(year, hour)))
-
-  bad_headers <- clean_data |>
+  bad_headers <- base_data |>
     filter(!str_detect(header, regex_patterns$header))
   if (nrow(bad_headers) > 0) {
-    stop("In file ", fn, " found invalid headers:",
-         "\n - ", bad_headers$header |>
-           paste(collapse = "\n - "))
+    stop(
+      "In file ", fn, " found invalid headers:",
+      "\n - ", bad_headers$header |>
+        paste(collapse = "\n - ")
+    )
   }
+
+  clean_data <- base_data |>
+    mutate(
+      year = convertToIsoDateString(year),
+      hour = convertToHourString(hour),
+      timestamp = lubridate::ymd_hm(paste(year, hour))
+    )
 
   return(clean_data)
 }

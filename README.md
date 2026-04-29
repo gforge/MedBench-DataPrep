@@ -6,14 +6,14 @@ This repository prepares fictional Electronic Health Records (EHRs) for the MedB
 
 The full pipeline spans three repositories:
 
-| Step | Repository | What happens |
-|------|-----------|--------------|
-| 1. Download charts | **DataPrep** (this repo) | Export case data from the Platform → `allData.json` |
-| 2. Convert to LLM input | **DataPrep** | R pipeline converts Word/Excel → merged markdown |
-| 3. Run LLM | [MedBench/LLM](../LLM) | Generate discharge summaries |
-| 4. Upload summaries | [MedBench/LLM](../LLM) | Push `.txt` outputs back to the Platform |
-| 5. Manual evaluation | [MedBench/Platform](../Platform) | Create a review campaign in the UI |
-| 6. Automated evaluation | **DataPrep** (this repo) | BLEU/ROUGE scoring |
+| Step                    | Repository                       | What happens                                        |
+| ----------------------- | -------------------------------- | --------------------------------------------------- |
+| 1. Download charts      | **DataPrep** (this repo)         | Export case data from the Platform → `allData.json` |
+| 2. Convert to LLM input | **DataPrep**                     | R pipeline converts Word/Excel → merged markdown    |
+| 3. Run LLM              | [MedBench/LLM](../LLM)           | Generate discharge summaries                        |
+| 4. Upload summaries     | [MedBench/LLM](../LLM)           | Push `.txt` outputs back to the Platform            |
+| 5. Manual evaluation    | [MedBench/Platform](../Platform) | Create a review campaign in the UI                  |
+| 6. Automated evaluation | **DataPrep** (this repo)         | BLEU/ROUGE scoring                                  |
 
 ---
 
@@ -22,6 +22,7 @@ The full pipeline spans three repositories:
 The R pipeline requires `data/output/allData.json`, which is the Platform's export of all case data. This file also provides the `chartTranslationId` values needed for uploading summaries in Step 4.
 
 **Prerequisites:**
+
 - The Platform is running (development or production)
 - You have an admin account
 
@@ -30,11 +31,10 @@ The R pipeline requires `data/output/allData.json`, which is the Platform's expo
 ```bash
 cd /path/to/MedBench/DataPrep
 
-# Login interactively
+# Login interactively (recommended)
 python download_platform_charts.py \
     --url https://label.cairlab.ki.se/graphql \
-    --email admin@example.com \
-    --password yourpassword
+    --email admin@example.com
 
 # Or pass a JWT token directly
 python download_platform_charts.py \
@@ -44,9 +44,11 @@ python download_platform_charts.py \
 # Or set environment variables
 export MEDBENCH_URL=https://label.cairlab.ki.se/graphql
 export MEDBENCH_EMAIL=admin@example.com
-export MEDBENCH_PASSWORD=yourpassword
+export MEDBENCH_PASSWORD='yourpassword'
 python download_platform_charts.py
 ```
+
+> Do not pass the password directly on the command line to avoid leaking it in shell history.
 
 **Output:** `data/output/allData.json`
 
@@ -54,12 +56,14 @@ python download_platform_charts.py
 
 ## Step 2: Convert charts to LLM input
 
-The R pipeline reads the Word/Excel source files from `data/Cases/` and merges them with `allData.json` to produce three output formats.
+The R pipeline reads chart data from `data/output/allData.json` and writes three output formats for downstream LLM use.
 
 **Prerequisites:**
+
 - R with packages: `tidyverse`, `glue`, `magrittr`, `lubridate`, `officer`, `readxl`, `jsonlite`, `knitr`, `snakecase`
-- Source files present in `data/Cases/{Specialty}/` (`.docx` + `.xlsx` pairs)
 - `data/output/allData.json` exists (from Step 1)
+
+Note: The build no longer depends on local `.docx` / `.xlsx` files.
 
 **Run:**
 
@@ -70,11 +74,11 @@ Rscript build_processed_output.R
 
 **Outputs in `data/processed/`:**
 
-| Format | Path | Used by |
-|--------|------|---------|
-| Raw JSON | `raw/raw_{Specialty}_{CaseID}_{Language}.json` | Reference / debugging |
-| Markdown JSON | `markdown/markdown_{Specialty}_{CaseID}_{Language}.json` | Alternative LLM input |
-| Merged markdown | `merged/merged_{Specialty}_{CaseID}_{Language}.md` | **LLM inference (Step 3)** |
+| Format          | Path                                                     | Used by                    |
+| --------------- | -------------------------------------------------------- | -------------------------- |
+| Raw JSON        | `raw/raw_{Specialty}_{CaseID}_{Language}.json`           | Reference / debugging      |
+| Markdown JSON   | `markdown/markdown_{Specialty}_{CaseID}_{Language}.json` | Alternative LLM input      |
+| Merged markdown | `merged/merged_{Specialty}_{CaseID}_{Language}.md`       | **LLM inference (Step 3)** |
 
 After running, copy the processed data to the LLM repository:
 
@@ -122,16 +126,16 @@ poetry run python evaluate_bleu_rouge.py --model "gpt-5.2_2025-12-11@temp=0.0@ba
 
 **Output:** `results/bleu_rouge.csv` with columns:
 
-| Column | Description |
-|--------|-------------|
-| `specialty` | Medical specialty |
-| `case_id` | Case identifier (e.g. "Case 1") |
-| `language` | Language (e.g. "original", "Swedish") |
-| `generated_by` | Full model+approach identifier |
-| `bleu` | Corpus BLEU score (0–100) |
-| `rouge1_f` | ROUGE-1 F1 |
-| `rouge2_f` | ROUGE-2 F1 |
-| `rougeL_f` | ROUGE-L F1 |
+| Column         | Description                           |
+| -------------- | ------------------------------------- |
+| `specialty`    | Medical specialty                     |
+| `case_id`      | Case identifier (e.g. "Case 1")       |
+| `language`     | Language (e.g. "original", "Swedish") |
+| `generated_by` | Full model+approach identifier        |
+| `bleu`         | Corpus BLEU score (0–100)             |
+| `rouge1_f`     | ROUGE-1 F1                            |
+| `rouge2_f`     | ROUGE-2 F1                            |
+| `rougeL_f`     | ROUGE-L F1                            |
 
 The script prints mean scores across all matched cases.
 

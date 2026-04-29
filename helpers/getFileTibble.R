@@ -14,7 +14,7 @@ library(tidyverse)
 #'  \item{language}{The language of the file.}
 #' }
 #' @export
-getFileTibble <- function() {
+getFileTibble <- function(include_docx = FALSE) {
   catalogue <- "data/Cases"
   if (!dir.exists(catalogue)) {
     stop("The catalogue ", catalogue, " can not be found")
@@ -24,39 +24,49 @@ getFileTibble <- function() {
     dir(recursive = TRUE) |>
     tibble(path = _) |>
     filter(!startsWith(path, "Orthopaedics/Svenska/") &
-             !str_detect(path, "Cardiology/case_[1-5]_hb/Case [1-5] Lab and Medications_hb.xlsx")) |>
-    filter(endsWith(path, ".docx") | endsWith(path, ".xlsx") | endsWith(path, '.md') | endsWith(path, ".txt")) |>
-    mutate(filename = basename(path),
-           specialty = str_replace(path, "([^/]+)/.+", "\\1"),
-           case_id = case_when(str_detect(filename, "Case_\\d+@[^@]+@[^@]+\\.md") ~ str_replace(filename, "(.*)Case_(\\d+)@.+", "Case \\2"),
-                               str_detect(filename, "Case_\\d+_") ~ str_replace(filename, "(.*)Case_(\\d+)_.+", "Case \\2"),
-                               TRUE ~str_replace(filename, "(.*)(Case [^ ]).+", "\\2")),
-           type = case_when(str_detect(tolower(filename), "fact sheet") ~ "Facts",
-                            endsWith(filename, "xlsx") ~ "Labs",
-                            startsWith(filename, "Summary") ~ "Summary",
-                            TRUE ~ "Main"),
-           language = case_when(str_detect(filename, "^Surgical Patient Case.+ EN.docx") ~ "original",
-                                str_detect(filename, "^Surgical Patient Case.+ SE.docx") ~ "Swedish",
-                                str_detect(path, "Svenska") ~ "Swedish",
-                                str_detect(path, "Swedish") ~ "Swedish",
-                                str_detect(path, "(_swe| SE)\\.(docx|xlsx)$") ~ "Swedish",
-                                str_detect(path, "Danish") ~ "Danish",
-                                str_detect(path, "Greek") ~ "Greek",
-                                str_detect(path, "French") ~ "French",
-                                str_detect(path, "German") ~ "German",
-                                str_detect(path, "Italian") ~ "Italian",
-                                TRUE ~ "original")) |>
+      !str_detect(path, "Cardiology/case_[1-5]_hb/Case [1-5] Lab and Medications_hb.xlsx")) |>
+    filter((include_docx & endsWith(path, ".docx")) | endsWith(path, ".xlsx") | endsWith(path, ".md") | endsWith(path, ".txt")) |>
+    mutate(
+      filename = basename(path),
+      specialty = str_replace(path, "([^/]+)/.+", "\\1"),
+      case_id = case_when(
+        str_detect(filename, "Case_\\d+@[^@]+@[^@]+\\.md") ~ str_replace(filename, "(.*)Case_(\\d+)@.+", "Case \\2"),
+        str_detect(filename, "Case_\\d+_") ~ str_replace(filename, "(.*)Case_(\\d+)_.+", "Case \\2"),
+        TRUE ~ str_replace(filename, "(.*)(Case [^ ]).+", "\\2")
+      ),
+      type = case_when(
+        str_detect(tolower(filename), "fact sheet") ~ "Facts",
+        endsWith(filename, "xlsx") ~ "Labs",
+        startsWith(filename, "Summary") ~ "Summary",
+        TRUE ~ "Main"
+      ),
+      language = case_when(
+        str_detect(filename, "^Surgical Patient Case.+ EN.docx") ~ "original",
+        str_detect(filename, "^Surgical Patient Case.+ SE.docx") ~ "Swedish",
+        str_detect(path, "Svenska") ~ "Swedish",
+        str_detect(path, "Swedish") ~ "Swedish",
+        str_detect(path, "(_swe| SE)\\.(docx|xlsx)$") ~ "Swedish",
+        str_detect(path, "Danish") ~ "Danish",
+        str_detect(path, "Greek") ~ "Greek",
+        str_detect(path, "French") ~ "French",
+        str_detect(path, "German") ~ "German",
+        str_detect(path, "Italian") ~ "Italian",
+        TRUE ~ "original"
+      )
+    ) |>
     select(-filename)
-  
+
   merged_summaries <- case_files |>
     filter(type == "Summary") |>
     group_by(specialty, case_id, language, type) |>
-    summarise(path = paste(path, collapse = "<|!!|>"),
-              specialty = specialty[1],
-              case_id = case_id[1],
-              language = language[1],
-              .groups = "drop")
-  
+    summarise(
+      path = paste(path, collapse = "<|!!|>"),
+      specialty = specialty[1],
+      case_id = case_id[1],
+      language = language[1],
+      .groups = "drop"
+    )
+
   # Append the merged summaries to the case_files instead of the individual summaries
   case_files <- case_files |>
     ungroup() |>

@@ -12,25 +12,29 @@
 #'  \item{summaries}{The summaries data in tibble format.}
 #' }
 merge_and_format_data <- function(data) {
-  tryCatch({
-    word_data <- word2tibble(data$Main)
-    medications_data <- medications2tibble(data$Labs, language = data$language)
-    lab_values_data <- lab2tibble(data$Labs, language = data$language)
-    summaries_data <- readSummaries(data$Summary)
-  }, error = function(e) {
-    browser()
-    stop(
-      "Error reading data: ", e$message,
-      "\n for case: ", data$case_id, " for ", data$specialty, " (language: ", data$language, ")"
-    )
-  })
+  tryCatch(
+    {
+      word_data <- word2tibble(data$Main)
+      medications_data <- medications2tibble(data$Labs, language = data$language)
+      lab_values_data <- lab2tibble(data$Labs, language = data$language)
+      summaries_data <- readSummaries(data$Summary)
+    },
+    error = function(e) {
+      stop(
+        "Error reading data: ", e$message,
+        "\n for case: ", data$case_id, " for ", data$specialty, " (language: ", data$language, ")"
+      )
+    }
+  )
 
   full_data <- list(
     notes = word_data |> select(type, date = year, time = hour, author, content),
-    medications = medications_data |> select(-timestamp))
+    medications = medications_data |> select(-timestamp)
+  )
 
   if (!is.null(lab_values_data)) {
-    full_data$lab <- lab_values_data |> mutate(date = as.Date(timestamp), time = format(timestamp, "%H:%M")) |>
+    full_data$lab <- lab_values_data |>
+      mutate(date = as.Date(timestamp), time = format(timestamp, "%H:%M")) |>
       select(-timestamp)
   }
 

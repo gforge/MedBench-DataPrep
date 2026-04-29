@@ -13,6 +13,8 @@ merge_into_single_markdown <- local({
   }
   
   process_medications_data <- function(medications) {
+    if (is.null(medications)) return(NULL)
+
     medications |>
       group_by(date) |>
       # Build a bullet list of the medications
@@ -44,10 +46,10 @@ merge_into_single_markdown <- local({
       word_data <- process_word_data(data$notes)
       medications_data <- process_medications_data(data$medications)
       lab_values_data <- process_lab_values_data(data$lab)
-    }, 
+    },
     warning = function(w) {
-      print(w)
-      browser()
+      stop("Warning reading data: ", w$message,
+           "\n for case: ", data$case_id, " for ", data$specialty)
     },
     error = function(e) {
       stop("Error reading data: ", e$message, "\n for case: ", data$case_id, " for ", data$specialty)

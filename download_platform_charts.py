@@ -3,12 +3,14 @@
 This file is required by build_processed_output.R (extend_with_platform_JSON).
 
 Usage:
-    python download_platform_charts.py --url http://localhost:4000 --email admin@example.com --password secret
+    python download_platform_charts.py --url http://localhost:4000 --email admin@example.com
     python download_platform_charts.py --url http://localhost:4000 --token <jwt_token>
-    python download_platform_charts.py  # reads MEDBENCH_URL, MEDBENCH_TOKEN or MEDBENCH_EMAIL/MEDBENCH_PASSWORD from env
+    python download_platform_charts.py  # reads MEDBENCH_URL, MEDBENCH_TOKEN or
+    # MEDBENCH_EMAIL/MEDBENCH_PASSWORD from env
 """
 
 import argparse
+import getpass
 import json
 import os
 import urllib.error
@@ -83,7 +85,9 @@ mutation Login($email: String!, $password: String!) {
 """
 
 
-def graphql_request(url: str, query: str, variables: dict, token: str | None = None) -> dict:
+def graphql_request(
+    url: str, query: str, variables: dict, token: str | None = None
+) -> dict:
     payload = json.dumps({"query": query, "variables": variables}).encode()
     headers = {"Content-Type": "application/json"}
     if token:
@@ -115,26 +119,44 @@ def download_charts(url: str, token: str, all_versions: bool = False) -> list:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Download chart data from the MedBench Platform")
-    parser.add_argument("--url", default=os.environ.get("MEDBENCH_URL", "http://localhost:4000/graphql"))
+    parser = argparse.ArgumentParser(
+        description="Download chart data from the MedBench Platform"
+    )
+    parser.add_argument(
+        "--url", default=os.environ.get("MEDBENCH_URL", "http://localhost:4000/graphql")
+    )
     parser.add_argument("--token", default=os.environ.get("MEDBENCH_TOKEN"))
     parser.add_argument("--email", default=os.environ.get("MEDBENCH_EMAIL"))
-    parser.add_argument("--password", default=os.environ.get("MEDBENCH_PASSWORD"))
+    parser.add_argument(
+        "--password",
+        default=os.environ.get("MEDBENCH_PASSWORD"),
+        help="Password for login; if omitted the script prompts securely when --email is provided",
+    )
     parser.add_argument("--out", default="data/output/allData.json")
-    parser.add_argument("--all-versions", action="store_true", help="Include all case versions (default: latest only)")
+    parser.add_argument(
+        "--all-versions",
+        action="store_true",
+        help="Include all case versions (default: latest only)",
+    )
     args = parser.parse_args()
 
     token = args.token
     if not token:
-        if not args.email or not args.password:
-            parser.error("Provide --token or both --email and --password (or set MEDBENCH_TOKEN / MEDBENCH_EMAIL+MEDBENCH_PASSWORD env vars)")
+        if not args.email:
+            parser.error(
+                "Provide --token or --email (or set MEDBENCH_TOKEN / MEDBENCH_EMAIL env vars)"
+            )
+        if not args.password:
+            args.password = getpass.getpass(f"Password for {args.email}: ")
         print(f"Logging in as {args.email}...")
         token = get_token(args.url, args.email, args.password)
         print("Login successful.")
 
     print(f"Downloading charts from {args.url}...")
     charts = download_charts(args.url, token, all_versions=args.all_versions)
-    print(f"Downloaded {len(charts)} cases ({sum(len(c.get('charts', [])) for c in charts)} chart translations).")
+    print(
+        f"Downloaded {len(charts)} cases ({sum(len(c.get('charts', [])) for c in charts)} chart translations)."
+    )
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

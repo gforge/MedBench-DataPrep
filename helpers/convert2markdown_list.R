@@ -19,16 +19,28 @@ convert2markdown_list <- function(data) {
       select(-no, -n)
   }
 
+  to_markdown_or_empty <- function(df) {
+    if (is.null(df) || nrow(df) == 0) {
+      return("")
+    }
+
+    df |>
+      knitr::kable(format = "markdown") |>
+      paste(collapse = "\n")
+  }
+
   tryCatch({
-    list(lab = data$lab |>
-           knitr::kable(format = "markdown") |>
-           paste(collapse = "\n"),
+    list(lab = to_markdown_or_empty(data$lab),
          singleLab = data$lab,
-         medications = data$medications |>
-           fixMedicationsWhenMultiples() |>
-           pivot_wider(names_from = date, values_from = timesPerDay) |>
-           knitr::kable(format = "markdown") |>
-           paste(collapse = "\n"),
+         medications = if (is.null(data$medications) || nrow(data$medications) == 0) {
+           ""
+         } else {
+           data$medications |>
+             fixMedicationsWhenMultiples() |>
+             pivot_wider(names_from = date, values_from = timesPerDay) |>
+             knitr::kable(format = "markdown") |>
+             paste(collapse = "\n")
+         },
          singleMedication = data$medications,
          chart = data$notes |>
            mutate(content = glue("# {type}, {date}, {time}, {author}\n{content}")) |>
