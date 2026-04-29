@@ -86,6 +86,8 @@ After running, copy the processed data to the LLM repository:
 rsync -a data/processed/ ../LLM/data/processed/
 ```
 
+**Next:** Proceed to **Step 3: LLM inference** in the [MedBench/LLM README](../LLM/README.md#running-evaluations).
+
 ---
 
 ## Steps 3–5: LLM inference, upload, and manual evaluation
