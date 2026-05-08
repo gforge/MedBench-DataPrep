@@ -1,0 +1,392 @@
+---
+title: "Second MedBench paper: PDQI+ campaign analysis"
+author: "Max Gordon"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    dev: pdf
+    self_contained: false
+params:
+  campaign_file: "data/output/reviewCampaign_<slug>.json"
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.dpi = 300)
+library(tidyverse)
+library(jsonlite)
+library(glue)
+library(boot)
+
+pdqi_domains <- c(
+  "accurate",
+  "thorough",
+  "useful",
+  "clear",
+  "organized",
+  "succinct",
+  "synthesizes",
+  "internallyConsistent",
+  "upToDate"
+)
+
+pdqi_labels <- c(
+  accurate = "Accurate",
+  thorough = "Thorough",
+  useful = "Useful / relevant",
+  clear = "Clear / understandable",
+  organized = "Organized",
+  succinct = "Succinct",
+  synthesizes = "Synthesizes / prioritizes",
+  internallyConsistent = "Internally consistent",
+  upToDate = "Up-to-date"
+)
+```
+
+```{r helpers}
+convert_decimal_to_lancet <- function(x) {
+  x |>
+    map_chr(\(value) str_replace(value, "\\.", "&middot;"))
+}
+
+txt_round <- function(x, digits = 1) {
+  ifelse(is.na(x), "", htmlTable::txtRound(x, digits = digits) |> convert_decimal_to_lancet())
+}
+
+style_table <- function(x) {
+  if (requireNamespace("kableExtra", quietly = TRUE)) {
+    return(kableExtra::kable_styling(x, full_width = FALSE, bootstrap_options = c("striped", "hover")))
+  }
+  x
+}
+
+mean_ci <- function(x, digits = 1) {
+  x <- x[!is.na(x)]
+  if (length(x) == 0) {
+    return("")
+  }
+  if (length(x) < 2) {
+    return(txt_round(mean(x), digits = digits))
+  }
+  boot_stat <- function(data, indices) mean(data[indices], na.rm = TRUE)
+  boot_result <- boot(x, boot_stat, R = 1000)
+  ci <- tryCatch(boot.ci(boot_result, type = "perc")$percent[c(4, 5)],
+                 error = \(e) c(NA_real_, NA_real_))
+  glue("{txt_round(mean(x), digits)} (95% CI {txt_round(ci[1], digits)} to {txt_round(ci[2], digits)})")
+}
+
+safe_factor <- function(x, ref = NULL) {
+  out <- factor(x)
+  if (!is.null(ref) && ref %in% levels(out)) {
+    out <- relevel(out, ref = ref)
+  }
+  out
+}
+
+normalise_language <- function(x) {
+  case_when(
+    x == "original" ~ "English",
+    is.na(x) | x == "" ~ "Unknown",
+    TRUE ~ x
+  )
+}
+
+normalise_generator <- function(generator_type, generated_by) {
+  case_when(
+    generator_type == "HUMAN" | generated_by == "Human" ~ "Human",
+    generator_type == "LLM" ~ "LLM",
+    str_starts(generated_by, "\\$") ~ "LLM",
+    TRUE ~ "Unknown"
+  )
+}
+
+normalise_prompt <- function(generator, prompt_type, generated_by) {
+  case_when(
+    generator == "Human" ~ "Human",
+    str_detect(generated_by, "@basic") ~ "Single",
+    str_detect(generated_by, "@decompos") ~ "Multistep",
+    !is.na(prompt_type) & prompt_type != "" ~ prompt_type,
+    TRUE ~ "Unknown"
+  )
+}
+
+output_mixed_model <- function(model, outcome, digits = 2) {
+  if (!requireNamespace("broom.mixed", quietly = TRUE)) {
+    return(glue("Mixed model for {outcome} was fitted, but broom.mixed is not installed for table output."))
+  }
+
+  broom.mixed::tidy(model, conf.int = TRUE) |>
+    filter(is.na(group)) |>
+    transmute(
+      Term = term,
+      Estimate = txt_round(estimate, digits),
+      `95% CI` = glue("{txt_round(conf.low, digits)} to {txt_round(conf.high, digits)}")
+    ) |>
+    knitr::kable("html", caption = glue("Mixed model results for {outcome}"), escape = FALSE) |>
+    style_table()
+}
+
+can_fit_mixed_model <- function(data, outcome) {
+  data |>
+    filter(!is.na(.data[[outcome]]), !is.na(generator), !is.na(reviewerName)) |>
+    summarise(
+      rows = n(),
+      generators = n_distinct(generator),
+      reviewers = n_distinct(reviewerName),
+      token_values = n_distinct(chartTokenCount[!is.na(chartTokenCount)]),
+      .groups = "drop"
+    ) |>
+    with(rows >= 8 && generators >= 2 && reviewers >= 2 && token_values >= 2)
+}
+
+fit_quality_model <- function(data, outcome) {
+  if (!requireNamespace("lme4", quietly = TRUE)) {
+    return(NULL)
+  }
+
+  model_data <- data |>
+    filter(!is.na(.data[[outcome]]), !is.na(generator), !is.na(reviewerName)) |>
+    mutate(
+      generator = safe_factor(generator, ref = "Human"),
+      chartTokenCountScaled = as.numeric(scale(chartTokenCount))
+    )
+
+  if (!can_fit_mixed_model(model_data, outcome)) {
+    return(NULL)
+  }
+
+  lme4::lmer(as.formula(glue("{outcome} ~ generator + chartTokenCountScaled + (1 | reviewerName)")),
+             data = model_data)
+}
+```
+
+```{r load-data}
+if (!file.exists(params$campaign_file)) {
+  stop(glue("Campaign export not found: {params$campaign_file}. Run download_platform_review_campaign.py first."))
+}
+
+campaign_export <- read_file(params$campaign_file) |>
+  fromJSON(simplifyVector = TRUE, flatten = TRUE)
+
+campaign <- campaign_export$campaign
+
+reviews <- campaign_export$reviewsFlat |>
+  as_tibble() |>
+  mutate(
+    language = normalise_language(language),
+    generator = normalise_generator(summaryGeneratorType, summaryGeneratedBy),
+    promptType = normalise_prompt(generator, promptType, summaryGeneratedBy),
+    across(c(overall, pdqi9_mean, pdqi9_total, safety, bias, hallucinationSeverity,
+             chartTokenCount, chartWordCount, noteCount, medicationCount, labValueCount,
+             factCount, lengthOfStayDays, seconds2review),
+           as.numeric),
+    across(starts_with("pdqi_") & !ends_with("__comment"), as.numeric)
+  )
+
+pdqi_cols <- paste0("pdqi_", pdqi_domains)
+
+chart_lengths <- reviews |>
+  distinct(chartTranslationId, caseName, specialty, language, chartTokenCount, chartWordCount,
+           noteCount, medicationCount, labValueCount, factCount, lengthOfStayDays)
+```
+
+# Campaign
+
+This report analyses review campaign `r campaign$label` (`r campaign$id`). The campaign review type is `r campaign$reviewType`.
+
+```{r campaign-summary}
+tibble(
+  Metric = c("Campaign label", "Review type", "Charts", "Summaries", "Reviews", "Reviewers", "Cases", "Languages", "Specialties"),
+  Value = c(
+    campaign$label,
+    campaign$reviewType,
+    length(campaign$charts$id),
+    sum(map_int(campaign$charts$summaries, nrow)),
+    nrow(reviews),
+    n_distinct(reviews$reviewerName),
+    n_distinct(reviews$caseName),
+    paste(sort(unique(reviews$language)), collapse = ", "),
+    paste(sort(unique(reviews$specialty)), collapse = ", ")
+  )
+) |>
+  knitr::kable("html", escape = FALSE, caption = "Campaign overview") |>
+  style_table()
+```
+
+```{r reviewer-contributions}
+reviews |>
+  count(reviewerName, sort = TRUE, name = "Reviews") |>
+  rename(Reviewer = reviewerName) |>
+  knitr::kable("html", caption = "Reviewer contributions") |>
+  style_table()
+```
+
+# Chart Length
+
+```{r chart-length-table}
+chart_lengths |>
+  group_by(specialty, language) |>
+  summarise(
+    Charts = n(),
+    `Chart tokens, median (range)` = glue(
+      "{median(chartTokenCount, na.rm = TRUE)} ({min(chartTokenCount, na.rm = TRUE)}-{max(chartTokenCount, na.rm = TRUE)})"
+    ),
+    `Chart words, median (range)` = glue(
+      "{median(chartWordCount, na.rm = TRUE)} ({min(chartWordCount, na.rm = TRUE)}-{max(chartWordCount, na.rm = TRUE)})"
+    ),
+    `Notes, median (range)` = glue(
+      "{median(noteCount, na.rm = TRUE)} ({min(noteCount, na.rm = TRUE)}-{max(noteCount, na.rm = TRUE)})"
+    ),
+    `Length of stay, median days (range)` = glue(
+      "{median(lengthOfStayDays, na.rm = TRUE)} ({min(lengthOfStayDays, na.rm = TRUE)}-{max(lengthOfStayDays, na.rm = TRUE)})"
+    ),
+    .groups = "drop"
+  ) |>
+  knitr::kable("html", escape = FALSE, caption = "Chart length by specialty and language") |>
+  style_table()
+```
+
+```{r chart-length-plot, fig.cap="Chart token counts by specialty and language."}
+chart_lengths |>
+  ggplot(aes(x = language, y = chartTokenCount, fill = specialty)) +
+  geom_boxplot(alpha = 0.8, outlier.shape = NA) +
+  geom_jitter(width = 0.15, alpha = 0.5) +
+  labs(x = "Language", y = "Approximate chart token count", fill = "Specialty") +
+  theme_minimal()
+```
+
+# PDQI+ Quality
+
+```{r quality-summary}
+reviews |>
+  group_by(generator, language) |>
+  summarise(
+    Reviews = n(),
+    `Overall score` = mean_ci(overall),
+    `PDQI-9 mean` = mean_ci(pdqi9_mean),
+    Safety = mean_ci(safety),
+    Bias = mean_ci(bias),
+    `Hallucination severity` = mean_ci(hallucinationSeverity),
+    .groups = "drop"
+  ) |>
+  knitr::kable("html", escape = FALSE, caption = "Quality outcomes by generator and language") |>
+  style_table()
+```
+
+```{r pdqi-domain-summary}
+reviews |>
+  select(generator, language, all_of(pdqi_cols)) |>
+  pivot_longer(cols = all_of(pdqi_cols), names_to = "domain", values_to = "score") |>
+  mutate(domain = str_remove(domain, "^pdqi_"), domain = recode(domain, !!!pdqi_labels)) |>
+  group_by(generator, language, domain) |>
+  summarise(Score = mean(score, na.rm = TRUE), .groups = "drop") |>
+  mutate(Score = txt_round(Score, 2)) |>
+  pivot_wider(names_from = language, values_from = Score) |>
+  arrange(generator, domain) |>
+  knitr::kable("html", escape = FALSE, caption = "Mean PDQI-9 domain scores") |>
+  style_table()
+```
+
+```{r overall-plot, fig.cap="Overall score distribution by generator and language."}
+reviews |>
+  filter(!is.na(overall)) |>
+  ggplot(aes(x = factor(overall), fill = generator)) +
+  geom_bar(position = "dodge", color = "black", alpha = 0.8) +
+  facet_wrap(~language) +
+  labs(x = "Overall score", y = "Review count", fill = "Generator") +
+  theme_minimal()
+```
+
+```{r pdqi-chart-length-plot, fig.cap="PDQI-9 mean score by chart token count."}
+reviews |>
+  filter(!is.na(pdqi9_mean), !is.na(chartTokenCount)) |>
+  ggplot(aes(x = chartTokenCount, y = pdqi9_mean, color = generator)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "Approximate chart token count", y = "PDQI-9 mean", color = "Generator") +
+  theme_minimal()
+```
+
+```{r prompt-summary}
+reviews |>
+  filter(generator == "LLM") |>
+  group_by(promptType, summaryGeneratedBy) |>
+  summarise(
+    Reviews = n(),
+    `Overall score` = mean_ci(overall),
+    `PDQI-9 mean` = mean_ci(pdqi9_mean),
+    Safety = mean_ci(safety),
+    Bias = mean_ci(bias),
+    `Hallucination severity` = mean_ci(hallucinationSeverity),
+    .groups = "drop"
+  ) |>
+  arrange(desc(Reviews), summaryGeneratedBy) |>
+  knitr::kable("html", escape = FALSE, caption = "LLM prompt/model subgroup quality") |>
+  style_table()
+```
+
+# Mixed Models
+
+Mixed models include generator type and scaled chart token count as fixed effects, with reviewer as a random intercept. Models are omitted when the selected campaign has too few observations or insufficient variation.
+
+```{r mixed-models}
+quality_outcomes <- c(
+  overall = "overall score",
+  pdqi9_mean = "PDQI-9 mean",
+  safety = "safety",
+  bias = "bias",
+  hallucinationSeverity = "hallucination severity"
+)
+
+models <- imap(quality_outcomes, \(label, outcome) {
+  if (!requireNamespace("lme4", quietly = TRUE)) {
+    return(glue("Mixed model for {label} was not fitted because lme4 is not installed."))
+  }
+
+  model <- fit_quality_model(reviews, outcome)
+  if (is.null(model)) {
+    return(glue("Mixed model for {label} was not fitted because the campaign has too few observations or insufficient variation."))
+  }
+
+  output_mixed_model(model, label)
+})
+
+for (model_output in models) {
+  print(model_output)
+}
+```
+
+# Comments
+
+```{r low-score-comments}
+comment_cols <- c(
+  "overallComment",
+  "safety__comment",
+  "bias__comment",
+  "hallucinationSeverity__comment",
+  paste0("pdqi_", pdqi_domains, "__comment")
+)
+available_comment_cols <- intersect(comment_cols, names(reviews))
+
+reviews |>
+  select(generator, language, specialty, caseName, summaryGeneratedBy, reviewerName,
+         overall, pdqi9_mean, all_of(available_comment_cols)) |>
+  pivot_longer(cols = all_of(available_comment_cols),
+               names_to = "commentType",
+               values_to = "comment") |>
+  filter(!is.na(comment), str_trim(comment) != "") |>
+  mutate(commentType = str_replace_all(commentType, "_", " ")) |>
+  arrange(generator, language, specialty, caseName) |>
+  knitr::kable("html", escape = FALSE, caption = "Reviewer comments") |>
+  style_table()
+```
+
+# Session
+
+```{r session-info}
+sessionInfo()
+```

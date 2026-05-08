@@ -10,12 +10,14 @@ Usage:
 """
 
 import argparse
-import getpass
 import json
-import os
-import urllib.error
-import urllib.request
 from pathlib import Path
+
+from python_helpers.platform_graphql import (
+    add_platform_auth_args,
+    graphql_request,
+    resolve_token,
+)
 
 CHARTS4EXPORT_QUERY = """
 query ExportCharts($allVersions: Boolean) {
@@ -76,39 +78,17 @@ query ExportCharts($allVersions: Boolean) {
 }
 """
 
-LOGIN_MUTATION = """
-mutation Login($email: String!, $password: String!) {
-  login(email: $email, password: $password) {
-    accessToken
-  }
-}
-"""
-
-
-def graphql_request(
-    url: str, query: str, variables: dict, token: str | None = None
-) -> dict:
-    payload = json.dumps({"query": query, "variables": variables}).encode()
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req) as resp:
-            body = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        body = json.loads(e.read())
-    if "errors" in body:
-        raise RuntimeError(f"GraphQL error: {body['errors']}")
-    return body["data"]
-
-
-def get_token(url: str, email: str, password: str) -> str:
-    data = graphql_request(url, LOGIN_MUTATION, {"email": email, "password": password})
-    return data["login"]["accessToken"]
-
-
 def download_charts(url: str, token: str, all_versions: bool = False) -> list:
+    """Download chart export data from the Platform.
+
+    Args:
+        url: Full GraphQL endpoint URL.
+        token: JWT access token for an admin user.
+        all_versions: Whether to include all case versions instead of only the latest.
+
+    Returns:
+        List of exported cases in the ``charts4export`` GraphQL shape.
+    """
     data = graphql_request(
         url,
         CHARTS4EXPORT_QUERY,
@@ -119,19 +99,11 @@ def download_charts(url: str, token: str, all_versions: bool = False) -> list:
 
 
 def main() -> None:
+    """Parse CLI arguments, download chart data, and write the JSON export."""
     parser = argparse.ArgumentParser(
         description="Download chart data from the MedBench Platform"
     )
-    parser.add_argument(
-        "--url", default=os.environ.get("MEDBENCH_URL", "http://localhost:4000/graphql")
-    )
-    parser.add_argument("--token", default=os.environ.get("MEDBENCH_TOKEN"))
-    parser.add_argument("--email", default=os.environ.get("MEDBENCH_EMAIL"))
-    parser.add_argument(
-        "--password",
-        default=os.environ.get("MEDBENCH_PASSWORD"),
-        help="Password for login; if omitted the script prompts securely when --email is provided",
-    )
+    add_platform_auth_args(parser)
     parser.add_argument("--out", default="data/output/allData.json")
     parser.add_argument(
         "--all-versions",
@@ -140,17 +112,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    token = args.token
-    if not token:
-        if not args.email:
-            parser.error(
-                "Provide --token or --email (or set MEDBENCH_TOKEN / MEDBENCH_EMAIL env vars)"
-            )
-        if not args.password:
-            args.password = getpass.getpass(f"Password for {args.email}: ")
-        print(f"Logging in as {args.email}...")
-        token = get_token(args.url, args.email, args.password)
-        print("Login successful.")
+    token = resolve_token(args, parser)
 
     print(f"Downloading charts from {args.url}...")
     charts = download_charts(args.url, token, all_versions=args.all_versions)
